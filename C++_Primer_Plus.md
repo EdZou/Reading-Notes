@@ -709,10 +709,393 @@
           typedef decltype(lengthComp) Func2; // Func1和Func2等价，都是函数类型
           ```
 
-          
+## 第七章 类
 
-    4. 
+1. 成员函数必须声明在类的内部，但它的定义**可以在类的内部也可以在类的外部**
 
-       
+2. 定义在类的内部的函数是隐式的inline函数
 
-## 第七章
+3. `this`
+
+   1. 使用点运算符时，调用成员函数，成员函数隐式地使用`this`访问调用它的对象
+   2. 当调用`total.isbn()`时，编译器负责将total的地址传给isbn的隐式形参`this`
+   3. `this`的类型是`class(这个类名) *const`，即指向对象引用的常量指针，*这意味着我们不能再一个常量对象上使用 `this`*
+
+4. const成员函数：参数列表后跟const的成员函数，**不能改变**调用它的对象的内容
+
+5. 编译器两步处理类：编译成员声明，再编译成员函数体
+
+6. 构造函数
+
+   1. 不能被声明成const函数，因为直到完成初始化，对象才取得常量属性，这也意味着，构造函数构造过程中可以对const成员写值
+   2. 编译器提供的构造函数为合成构造函数，但我们不能依赖默认构造函数，三原因P236
+
+7. 可以显式使用`=default`声明使用默认构造函数，类内使用为inline，否则不是
+
+8. 类外定义构造函数需要指定是哪个类的成员，如`Sales_data::Sales_data(std::stream &is)`
+
+9. 访问控制`public`, `private`和`protected`三兄弟不再赘述
+
+10. `class`和`struct`唯一的区别，struct默认第一个访问说明符之间都是public，class都是private
+
+11. 友元的声明只能在类的内部，可以访问private成员
+
+12. 类内定义的别名`typedef`和`using`同样有访问限制
+
+13. `mutable`关键字
+
+    1. mutable成员永远不是const，即便是const成员函数也可以对其改变
+
+14. 类内初始值（`{}`或者`=`）
+
+    ```c++
+    class WindowMgr {
+        private:
+        	std::vector<Screen> screens{Screen(80,24,' ')};
+        	int i = 0;
+    }
+    ```
+
+15. 返回`*this*`的成员函数
+
+    ```c++
+    class Screen {
+        public:
+        Screen &set(char); //注意返回Screen的引用
+    }
+    inline Screen &Screen::set(char c) {
+        contents[cursor] = c;
+        return *this;
+    }
+    ```
+
+    该例如果set返回的不是引用，那么就会返回一个副本，不会改变原对象的值
+
+16. P248提供了根据对象本身是否是const来重载函数的例子
+
+17. `class Screen`是一个前向声明，它在完成定义前是一种*不完全类型(incomplete type)*，类必须要先完成定义才能通过引用或指针访问成员，如果不定义编译器无法得知分配多少内存。故而一个类的成员不能包含类自己（套娃，无法确定分配多少内存），但可以定义指向自己的指针或引用（引用本质也是指针，大小确定），或者用静态声明不完全类型
+
+18. 友元关系不具备传递性，”朋友的朋友不是我的朋友“
+
+19. 如果有多个重载的函数，只有精准匹配的那个版本可以获得友元权力
+
+20. 类成员生命查找：
+
+    如下例中
+
+    ```c++
+    typedef double Money;
+    string bal;
+    class Account {
+        public:
+        	Money balance() {return bal};
+        private:
+        	typedef double Money; // 不能重新定义Money
+        	Money bal;
+    }
+    ```
+
+    当编译器看到balance()的声明，先往**类内，balance之前的部分查找**，没有找到匹配成员再往外层作用域查找
+
+    这里即使类内定义的Money与外层作用域一致也会报错，因为成员balance()已经使用了外部作用域的定义别名
+
+21. 成员函数的作用于查找类似，详见p255
+
+22. 如果有const成员，那么构造函数中必须对其进行初始化
+
+23. 尽量用构造函数的参数作为初始化成员的值
+
+24. 委托构造函数，本质是调用其他的构造函数并且在函数体内加上自己的部分，如下
+
+    ```c++
+    Sales_data(std::istream &is): Sales_data() { read(is, *this); }
+    ```
+
+    这个构造函数委托了另一个构造函数完成部分构造并在后续的`{}`内加上了自己的部分，这里的逻辑是**先**执行**被委托**的构造函数的初始化列表和函数体，再将控制权给委托者`{}`内的部分
+
+25. 默认构造函数的三个情形P262
+
+26. 隐式的类类型转换：
+
+    1. 比如下例：
+
+       ```c++
+       Item::combine(Sales_data d);
+       // 隐式创建Sales_data
+       item.combine(cin);
+       ```
+
+       本质是先用cin创建一个临时的Sales_data，再将临时对象传递给item，创建完后会被丢弃
+
+       但是只能一步转换，比如下例
+
+       ```c++
+       item.combine("123456");
+       // 实际包含两步
+       // "123456" -> string("123456")
+       // string -> Sales_data(string)
+       // 故而报错
+       ```
+
+    2. 可用关键字`explicit`抑制隐式转换，但只对**单实参**构造函数有效（因为需要多个实参的原本就不能隐式转换），可以用C++的`bind`函数来解决，类似于python的装饰器
+
+    3. 被`explicit`限制的构造函数只能用于直接初始化，不能用于拷贝形式
+
+    4. `static_cast`可以无视`explicit`强制隐式转换，如`item.combine(static_cast<Sales_data>(cin));`
+
+27. *聚合类(aggregate class)*
+
+    1. 所有成员都是public
+    2. 没有定义任何构造函数
+    3. 没有类内初始值
+    4. 没有基类和虚函数
+    5. 初始值的顺序必须与生命顺序一致
+
+28. 数据成员都是字面类型的聚合类就是*constexpr类*，与单纯聚合类不同，可以定义constexpr构造函数（P268有字面值常量类的例子）
+
+29. 静态成员不能是const，被所有子类共享，不能在static函数内使用`this`（因为不清楚`this`指向哪个对象）
+
+30. 类内声明类外定义static成员时，在类外不能重复static关键字，一旦static被定义，就存在于程序的整个周期之中
+
+31. 类内（一般在类外初始化）初始化static成员，成员必须是constexpr且初始值也要是constexpr
+
+## 第八章 IO类
+
+1. IO对象无拷贝或赋值
+2. P279，280标注了流的条件状态和相应解释
+3. `endl`刷新缓冲区等于加上`\n`，`flush`只刷新缓冲区不加额外的字符，例：`cout << "Hi" << flush`
+4. 可用`cout << unitbuf`来每次操作后都刷新一次缓冲区，`cout << nounitbuf`回归正常
+5. 关联两个流用`tie`，如：`cin.tie(&cout)`，这样每当cin读取数据都会先刷新cout的缓冲区，不再关联就用空指针：`cin.tie(nullptr)`
+6. 文件输入/出详见P283，P286设定文件的读写模式（这里有些细节需要注意），与其它语言相差不大，不再赘述
+
+## 第九章 顺序容器
+
+这一部分主要都是数据结构相关，已经比较熟悉，不会在本笔记中记录过多
+
+1. 先介绍几种基本结构：
+
+   1. `vector`: 顺序存储，最常用，可快速访问，可变大小的数组，当元素数量超过分配大小时会重新分配（分配一个大小是原来两倍的空间）并将之前的元素拷贝过去
+   2. `deque`: 双端**队列**（python中有类似实现），在头尾插入/删除很快
+   3. `list`: 双向链表
+   4. `forwarded_list`：单向链表
+   5. `array`: 固定大小数组，不能添加或删除元素
+   6. `string`: 与`vector`类似，但专门保存字符，连续存储空间
+
+2. P295记录了详细的容器操作
+
+3. 迭代器**左闭右开(很重要！！！)**，[begin, end)
+
+4. 这些类型都是模板，需要在尖括号内提供具体类型来实例化（16章会说）
+
+5. `.cbegin()`返回`const_iterator`，不能修改元素
+
+6. `.rbegin()`返回`reverse_iterator`，按逆序寻址元素的迭代器
+
+7. P299有容器的初始化方法，大体和之前提到的没有区别，就多了一个`C c(b,e)`，拷贝迭代器b和e之间的元素给c
+
+8. 当一个容器初始化为另一个容器的拷贝时，两个容器的容器类型和元素类型必须完全一致
+
+9. `array`需要在初始化时指定大小，如`array<int, 42>`表示保存42个整型，用列表初始化时，不够的元素都会被值初始化
+
+10. `array`不支持`assign`和花括号的值列表进行赋值
+
+    `assign`三种操作
+
+    	1. `seq.assign(b,e)`将seq中元素替换成迭代器b，e中间的元素。b，e不能指向seq中原有的元素
+     	2. `seq.assign(il)`将seq中元素替换成`initializer_list`中的元素
+     	3. `seq.assign(n, t)`将seq中元素替换成n个值为t的元素
+
+11. 允许使用`assign`对一个不同容器和数据类型但相容的类型赋值
+
+12. `swap`本质交换指针，所以o(1)内可以完成
+
+13. 所有容器都支持（==，!=），顺序容器支持关系运算(>,<等，本质是对元素的逐对比较)
+
+14. P305罗列了顺序容器添加元素的做法， P311则罗列了删除元素的做法
+
+15. insert方法返回指向插入元素的迭代器
+
+16. `c.front()`和`c.back()`分别是头尾元素的引用，当容器为空，这两个都是未定义
+
+17. 使用下标超界直接报错，`c.at()`会throw一个`out_of_range`异常
+
+18. `c.erase(b, e)`一样是左闭右开，返回被删元素之后的迭代器（该例返回e）
+
+19. `forwarded_list`不用`insert,emplace,erase`，而是用`insert_after,emplace_after,erase_after`。原因不必赘述，但凡刷过lc的都懂单向链表。但注意`lst.erase_after(b,e)`是**左开右开**
+
+20. 改变容器大小`resize`
+
+    1. `c.resize(n)`，n大于原本大小就把多出来的元素丢弃，n小于原本大小且必须添加新元素，就对新元素值初始化
+    2. `c.resize(n,t)`，调整c的大小为n，任何新添加的元素都用t填充
+
+21. 添加元素操作可能使容器失效
+
+    1. 对于vector和string，如果存储空间被重新分配，那么迭代器，引用，指针（三个本质都是指针）会失效；没重新分配就不会
+    2. 对于deque，插入除了首尾以外全失效；插入首尾后迭代器失效，指向deque内元素的引用和指针不会失效
+    3. 对于list和forwarded_list，都不会失效
+
+22. 添加元素操作也可能使容器失效（本质数据结构那一套，和添加对应，P315不再赘述）
+
+23. 注意循环时每次都取`.end()`而不是保存，因为尾后迭代器很容易失效
+
+24. vector的增长
+
+    1. 前面也提到了vector的预分配空间是会增长的
+    2. `c.capacity()`看预分配的空间大小
+       1. `c.shrink_to_fit()`把capacity缩减到和size大小一致（不一定有效，只适用于vector, string, deque）
+    3. `c.reserve(n)`预分配**至少**n个元素的空间
+
+25. P321记录了string其他的拷贝方法，主要是对应拷贝char*
+
+26. string特有的append（尾后插入）和replace（可调整被替换部分的大小）方法（P323）
+
+27. string的搜索操作在P325，注意对大小写敏感
+
+28. `compare`能够指定比较哪些部分的字符串，也能指定string和char*之类的比较（P327）
+
+29. 容器适配器，这里特指`stack,queue,priority_queue`，也就是栈，队列和堆，已经刻进DNA了，这里不再赘述
+
+## 第十章 泛型算法
+
+算法我确实比较熟悉了，这里也并非C++ specific的内容，故而这部分笔记不会太多
+
+1. lambda表达式（重点）
+
+   1. 可理解为是一个未命名的inline函数
+
+   2. 其形式：
+
+      ```c++
+      [capture list] (parameter list) -> return type {function body}
+      ```
+
+      *capture list* 可以捕获lambda所在函数中定义的局部变量，其余和普通函数类似
+
+      注意lambda必须使用尾置返回
+
+   3. lambda捕获值是在**创建时**拷贝而非使用时拷贝，可以通过指针或引用来使用变化的捕获值
+
+   4. 可以通过=或&符号指定值/引用捕获
+
+      e.g. `[=, &os]`和`[&, c]`，当混合使用隐式和显式捕获时，显式捕获（例中c和&os）必须采用和隐式捕获不同的方式
+
+   5. 可变lambda：如果希望改变捕获的值，在parameter list后加上mutable关键字
+
+2. 参数绑定bind（重点）
+
+   1. 需要首先声明`using std::placeholders;`
+
+   2. 形式为`auto newCallable = bind(oldCallable, arglist);`
+
+   3. 比如下例：
+
+      ```c++
+      bool old_check(const string &s, string:size_type sz);
+      // 该例中，new_check的sz已被绑定为42，形参的第一个会为s赋值
+      auto new_check = bind(old_check, _1, 42);
+      ```
+
+      `_1`表示输入的第一个形参会为对应old func的形参赋值，`_2,_3`以此类推
+
+3. 反向迭代器++会使迭代器向左移动（与普通迭代器相反），且`.rbegin()`返回指向最后一个元素的迭代器，而`.rend()`则返回指向**首前一个元素**的迭代器。可以通过反向迭代器直接等价于传入一个已经反向的容器
+
+4. 可以使用`.rend().base()`来保证反向迭代器转化为正向迭代器，但是会指向`.rend()`相邻的元素
+
+5. 迭代器类别（P366）
+
+   1. 输入输出迭代器：只能单向输入/输出（只写/只读）
+   2. 前向迭代器：可以同时输入/输出，但迭代器自身只能单向移动
+   3. 双向迭代器：迭代器自身也能双向移动
+   4. 随机访问迭代器：o(1)访问任意元素
+
+6. 特定算法（forwarded_list & list）：
+
+   1. `lst1.merge(lst2, compare)`，lst1和lst2都需要是有序的，用compare进行比较
+   2. `lst.splice / flist.splice_after`（P370）
+
+## 第十一章 关联容器
+
+map和set，这一部分也属于最熟悉的数据结构了
+
+1. map和multimap(关键字可重复)定义在头文件map中；set和multiset(关键字可重复)定义在头文件set中；无序容器(根据hash组织的)定义在头文件unorderer_map和unordered_set中
+
+2. 对于有序类型必须提供比较的办法，且必须**严格弱序**：
+
+   1. 两关键字不能同时*小于等于* 对方
+   2. 大小比较具有传递性，即k1 <= k2且k2 <= k3可得k1 <= k3
+   3. 两关键字都不小于等于另一个，则两关键字等价，且等价具有传递性
+
+3. 比较函数的使用
+
+   ```c++
+   // 定义一个Sales_data对象上ISBN成员的严格弱序
+   bool compareIsbn(const Sales_data &lhs, const Sales_data &rhs) {
+       return lhs.isbn() < rhs.isbn();
+   }
+   // 定义一个bookstore对象按isbn大小排序存储Sales_data
+   // decltype(compareIsbn)*说明我们要使用一个给定函数的指针
+   // 用compareIsbn来初始化bookstore对象说明我们添加对象时，用compareIsbn来排序
+   multiset<Sales_data, decltype(compareIsbn)*> bookstore(compareIsbn);
+   ```
+
+4. pair类型
+
+   1. 定义在头文件utility中，保存两个数据成员，例如`pair<string, vector<int>> line;`
+   2. 可以提供初始化器，例如``pair<string, string> author{"James", "Joyce"};`
+   3. pair的成员是public的，分别使用`pair.first`和`pair.second`来调用
+   4. 函数调用时可用列表初始化值`{"James", "Joyce"}`作为返回值（较早C++版本不行）
+   5. 显式构造返回值：
+      1. `return pair<string, int>("James", s.size());`
+      2. 或`return make_pair("James", s.size());`
+
+5. 关联容器操作
+
+   1. `key_type`和`value_type`对于set是一样的，对于map不同
+
+   2. `mapped_type`是map独有的，表示`pair.second`的类型，例子如下：
+
+      ```c++
+      set::string::value_type v1; // v1是一个string，key_type也是
+      map<string, int>::key_type v2; // v2是一个string
+      map<string, int>::mapped_type v3; // v3是一个int
+      map<string, int>::value_type v4; // v4是一个pair<const string, int>
+      ```
+
+6. 关联容器的迭代器
+
+   1. `auto map_iter = word_count.begin()`，这里map_iter指向一个`pair<const string, int>`对象的引用
+   2.  set的迭代器是const的
+
+7. 添加元素（P384），与之前的其他容器类似，使用insert和emplace操作，insert可根据返回值(bool，true为插入成功)确定是否插入成功
+
+8. 删除操作（P387），使用erase操作
+
+9. 元素的访问（P389）：
+
+   1. `c.find(k)`返回指向第一个关键字为k的元素的迭代器
+   2. `c.count(k)`返回关键字k的数量（不重复关键永远返回1或0）
+   3. `c.lower_bound(k)`返回指向第一个关键字不小于k的元素的迭代器，即指向第一个关键字k的位置（找不到就和`c.upper_bound(k)`指向同一个）
+   4. `c.upper_bound(k)`返回指向第一个关键字大于k的元素的迭代器，即指向最后一个关键字为k元素之后的一个元素位置
+   5. `c.equal_range(k)`返回一个迭代器pair，指向关键字等于k的元素的迭代器范围，若k不存在，则pair的俩迭代器都等于`c.end()`
+
+10. 无序容器管理桶：
+
+    1. 每个桶保存零个或多个元素，容器将所有特定hash值的所有元素都保留在桶中（这点有别于java的红黑树）P395定义了对桶的一些管理操作
+
+    2. 自定义的类型不能直接使用无序容器，需要提供自定义的hash模板，如下
+
+       ```c++
+       size_t hasher(const Sales_data &sd) {
+           return hash<string>()(sd.isbn());
+       }
+       bool eqOp(const Sales_data &lhs, const Sales_data &rhs) {
+           return lhs.isbn() == rhs.isbn();
+       }
+       // 定义一个unordered_multiset
+       using SD_multiset = unorder_multiset<Sales_data, decltype(hasher)*, decltype(eqOp)*>;
+       SD_multiset bookstore(42, hasher, eqOp);
+       ```
+
+       如果类（此例中Sales_data）定义了operater==，那么只需要重载hasher即可
+
+## 第十二章
