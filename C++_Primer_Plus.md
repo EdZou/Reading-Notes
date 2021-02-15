@@ -1098,4 +1098,859 @@ map和set，这一部分也属于最熟悉的数据结构了
 
        如果类（此例中Sales_data）定义了operater==，那么只需要重载hasher即可
 
-## 第十二章
+## 第十二章 动态内存
+
+面经重点:)
+
+1. 除了静态内存和栈内存，每个程序都拥有一个内存池，也就是堆(heap)/自由空间(free store)，程序用堆来动态分配内存，需要显式的销毁
+
+2. 引入智能指针（都定义在memory头文件中）：
+
+   1. `shared_ptr`：允许多个指针指向同一个对象
+   2. `unique_ptr`："独占"所指向的对象
+   3. `weak_ptr`: 弱引用，指向shared_ptr指向的类（java里也有）
+
+3. `shared_ptr`详解：
+
+   1. `shared_ptr<T> sp`，空智能指针，指向T类型的对象
+   2. `p.get()`返回p保存的指针（shared，unique都支持）
+   3. `swap(p, q)`交换指针的内容（而非指向的对象内容，shared，unique都支持）
+   4. 如果智能指针指向的对象的引用计数（python的内存管理）归零，就释放这个对象
+   5. `p.use_count()`返回p共享对象的智能指针数量，可能很慢
+   6. `p.unique()`如果use_count为1返回true，否则false
+   7. 防止内存泄漏，比如将shared_ptr放在容器中，之后不再需要，一定记得使用erase删除容器中的shared_ptr
+
+4. `make_shared`函数
+
+   1. 和emplace函数作用相近
+   2. 用法`shared_ptr<int> p = make_shared<int>(42);`
+   3. 如果不传递参数就会进行值初始化，如`shared_ptr<int> p = make_shared<int>();`
+
+5. 使用动态内存三原因：
+
+   1. 程序不知道自己用多少对象
+   2. 程序不知道对象的准确类型
+   3. 程序需要在多个对象中共享数据
+
+6. 直接管理内存（不用智能指针，用new/delete）
+
+   1. 因为free store分配的空间是无名的，new只能返回一个指向分配对象的指针，如`int *pi = new int;`
+
+   2. 可使用构造，列表初始化`new string(10, '1')`或`new vector<int>{1,2,3}`
+
+   3. 可用auto来自动推断分配类型，但只能括号中仅有单一初始化器时使用
+
+      ```c++
+      auto p1 = new auto(obj); // 正确，推断出obj同类型的指针
+      auto p2 = new auto{1,2,3}; // 错误，只能为单一初始化器
+      ```
+
+   4. 可用new分配const对象，如`const int *pci = new const int(1024);`
+
+   5. 内存耗尽处理
+
+      ```c++
+      int *p1 = new int; // 分配失败，返回空指针，new抛出std::bad_alloc
+      // 这里顺带一提，malloc不会抛出异常，只能通过返回是否是空指针判断成功与否
+      int *p2 = new (nothrow) int; // 不抛出异常，和malloc相似
+      ```
+
+   6. 一次new必须且只能对应一次delete操作，多次delete同一个new的指针是未定义的
+
+   7. 如果函数A返回一个new生成的指针，而函数B用内置（普通）指针接收，那么即使B函数周期结束，因为不是智能指针，内置指针本身被释放，但指向的new出来的对象则不会（内存泄漏）解决方法：手动在B中delete内置指针
+
+   8. 注意如果delete一个内置指针，很可能会有其他指针指向已经被释放的内存（空悬指针）
+
+7. shared_ptr和new的结合
+
+   1. 注意不能进行内置指针到智能指针的隐式转换，必须使用直接初始化，如下例
+
+      ```c++
+      shared_ptr<int> p1 = new int(1024); // 错误，不能隐式转换
+      shared_ptr<int> p1(new int(1024)); // 正确，直接初始化
+      ```
+
+      `shared_ptr<T> p(q, d)` p接管内置指针q所指向的对象的所有权（之后不要用内置指针q访问了），并且将q置为空，p会调用d（可不重载）来代替delete。如果q也是一个shared_ptr，那么p就是q的一个拷贝，唯一不同就是d的不同
+
+      当shared指针被销毁，被接管的普通指针也会失效
+
+      `p.reset(q, d)`会首先放弃原本的引用（引用计数减一，0就自动回收），将指向对象改为q，相应的delete重载为d（可选择不重载）
+
+   2. `p.get()`智能指针的get方法返回内置指针，这意味着，如果发生以下情况
+
+      ```c++
+      shared_ptr<int> p(new int(42));
+      int *q = p.get();
+      shared_ptr<int> p2(q); // p2和p相互独立，不共用引用计数！！！
+      ```
+
+8. 如果new之后delete之前发生了异常，不会释放内存导致内存泄露，使用shared_ptr等智能指针能在异常时也调用析构函数/delete
+
+9. 注意不要使用同一个内置指针初始化多个智能指针，会使智能指针相互独立
+
+10. 不delete get()返回的指针
+
+11. 不用get()初始化/reset()另一个智能指针
+
+12. `unique_ptr`详解
+
+    1. unique_ptr独占，所以不支持普通的拷贝或赋值
+    2. unique_ptr操作（P418）大体上和shared相近，注意`u.release()`放弃对指针的所有权，返回内置指针，并将u置空，可以通过`p2.reset(p3.release());`转移所有权。注意release返回的内置指针需要delete，不会自动回收
+    3. 我们可以拷贝/赋值一个将要销毁的，最常见从函数返回一个unique_ptr
+    4. 传递删除器`unique<connection, decltype(end_connection)*> p(&c, end_connection)`
+
+13. `weak_ptr`详解P420
+
+    1. 与shared_ptr指向相同对象
+    2. 不参与生存周期管理，不增加引用计数
+    3. 使用前需要调用`w.expired()`，如果shared的引用计数>0则true，否则false
+    4. `w.lock()`如果引用计数大于0则返回一个shared_ptr，不然返空的shared
+
+14. 动态数组
+
+    1. 本质思想：将分配和初始化分离减小消耗
+
+    2. 动态分配一个空数组合法：
+
+       ```c++
+       char arr[0]; // 不合法，不能定义长为0的数组
+       char *cp = new char[0]; // 正确，但是cp不能解引用
+       
+       // 通过delete []释放动态数组
+       delect [] cp;
+       ```
+
+    3. unique_ptr支持动态数组的管理
+
+       ```c++
+       unique_ptr<int[]> up(new int[10]);
+       up.release(); // 自动调用delete[]
+       ```
+
+    4. 但shared_ptr不支持管理动态数组，需要提供删除器，如：`shared_ptr<int> sp(new int[10], [](int *p) { delete [] p; });`
+
+    5. 注意shared_ptr不支持下标运算和算数运算，需要用`.get()`先得到内置指针再算术运算得到对象，如`*(sp.get() + i)`
+
+    6. `alloctor`详解
+
+       1. 定义在memory类中，是一个模板，分配的内存为原始未构造的
+
+       2. 分配使用方法
+
+          ```c++
+          allocator<string> alloc;
+          auto const p = alloc.allocate(n); // 分配了n个未初始化的string
+          ```
+
+       3. 构造使用方法
+
+          ```c++
+          alloc.construct(q++, 10, '1'); // *q为"1111111111"
+          ```
+
+       4. 用完对象利用destory执行对象的析构函数
+
+          ```c++
+          while (q != p) {
+              alloc.destory(--q);
+          }
+          ```
+
+       5. 最后释放内存
+
+          ```c++
+          alloc.deallocate(p, n);
+          ```
+
+    7. 拷贝和填充未初始化内存的标准库算法P429，`uninitialized_copy`一类，这里不多赘述
+
+## 第十三章 拷贝控制
+
+一个类通过五种特殊的成员函数控制对象的拷贝，移动和赋值时的操作，分别是拷贝构造函数(copy constructor)，拷贝赋值函数(copy-assignment operator)，移动构造函数(move constructor)，移动赋值函数(move-assignment operator)和析构函数(destructor)，这些操作组成了拷贝控制操作
+
+1. 拷贝构造函数
+
+   1. 第一个参数几乎总是一个const的引用，如 `Foo(const Foo&)`
+   2. 默认的合成拷贝构造函数一般依次拷贝非static成员
+   3. 拷贝初始化的例子：`string nines = string(10, '1');`
+   4. insert和push都是拷贝初始化，emplace的元素都是直接初始化
+   5. 函数调用时，非引用类型参数需要拷贝初始化，这也是为什么拷贝构造函数必须要const的引用，避免调用的无限循环（P442）
+
+2. 拷贝赋值函数
+
+   1. 重载operator=，例`Foo& operator=(const Foo&)`
+   2. 与拷贝构造类似，右侧对象的每个非static成员依次拷贝
+
+3. 析构函数
+
+   1. 释放并销毁对象的非static成员，按初始化逆序销毁
+   2. 智能指针会在析构自动销毁
+   3. 离开作用域或调用delete时自动调用析构，注意容器被销毁时元素也会被销毁
+   4. 空析构函数体意味着没有任何需要手动销毁，成员都可以自动销毁
+
+4. 三/五法则
+
+   1. 如果一个类需要一个析构函数，那么几乎可以肯定它也需要一个拷贝构造和赋值函数（三个基本操作）
+
+      比如我们new一个成员，自然需要在析构函数中定义相应的delete操作，但如果使用默认的合成拷贝函数，会导致多个对象公用一个new的对象，析构时也会有多次delete(未定义操作)
+
+   2. 需要拷贝操作的类也需要赋值操作
+
+5. 可以用`=delete`来阻止拷贝/赋值，如`NoCopy(const NoCopy&) = delete;`。注意析构不能是=delete的，因为一旦删除就无法回收，编译器也不会允许这个类的变量定义和创建
+
+6. 编译器合成的拷贝控制函数可能是=delete（P450）
+
+   1. 析构是删除或不可访问（如private）
+   2. 拷贝构造函数是删除或不可访问
+   3. 拷贝赋值函数是删除或不可访问，或类有一个const的或引用成员
+   4. 类内的某个成员满足以上条件
+
+7. 行为像值的类：
+
+   1. 先将目标拷贝进一个临时量
+   2. delete掉原本的值
+   3. 将临时量赋予左值
+   4. 注意这是为了一个对象赋予自身时也能工作的必要步骤
+
+8. 注意定义自己的swap函数时，应该在swap函数内用`using std::swap;`而不是直接用`std::swap(a.i, b.i);`因为如果类自身有定义，swap匹配时，自身版本会优于`std::swap`
+
+9. 移动利用`std::move`，能够保证移后源仍保持一个有效可析构的状态，使用`std::move`还能省去中间生成临时量的步骤
+
+10. 右值引用
+
+    1. 必须绑定到右值的引用，通过&&来获取，例`int &&rr = 12*3;`
+    2. 左右值区别：左值持久，右值短暂
+    3. 变量都是左值，但是可以通过`std::move`将左值转换为右值
+
+11. 移动构造函数和移动赋值运算符
+
+    1. 第一个参数一定是该类类型的一个右值引用，任何其他的额外参数都必须有默认实参
+
+    2. 移动构造函数必须保证移后的源对象销毁是无害的，完成移动后，源对象不再指向被移动的资源——这些资源的所有权已经是新的对象的
+
+    3. 编译器会认为我们移动操作有异常，所以需要`noexcept`关键字
+
+    4. 如果类定义了拷贝构造函数，拷贝赋值运算符，析构函数中的任意一个，编译器不会为它合成移动操作，只有当上述三个都没有自定义，且类内每个非static成员都可移动，编译器才为类合成移动操作
+
+    5. 与拷贝不同，移动操作永远不会隐式定义为=delete函数，除非以下情况
+
+       1. 定义=default，但有成员无法移动（比如类成员是const或是const的引用，或类成员定义了拷贝却没定义移动操作，类成员的移动操作=delete）
+
+    6. 拷贝操作和移动操作有相互作用关系，如果类定义了自己的移动操作（任意一个）且未定义自己的拷贝操作，那么两个拷贝操作都被定义为=delete
+
+    7. 如果没有合成的移动复制，则会利用已有的拷贝操作，过程：右值->拷贝成左值->拷贝操作
+
+    8. 使用如下
+
+       ```c++
+       StrVec::StrVec(StrVec &&s) noexcept
+           // noexcept位于成员初始化器前，参数列表后
+           // 成员初始化会接管s中的资源
+           : elements(s.elements), first_free(s.first_free), cap(s.cap) {
+               // 保证s对其运行析构是安全的
+               s.elements = s.first_free = s.cap = nullptr;
+           }
+       ```
+
+       `noexcept`的存在也是为了保证不会出现新元素未完全拷贝而被赋值的旧元素已被部分改变的现象（类似MySQL的原子性）
+
+       移动操作也需要能保证自赋值
+
+12. 通常定义一个接收const的左值的拷贝构造函数和接受非const右值引用的移动构造函数
+
+13. 引用限定符
+
+    1. & 左值， && 右值
+    2. 跟在const限定符后，例`Foo anotherMen() const &;`
+    3. 注意引用限定符，要么同名且同参数函数全都要加上，要不全都不加
+
+## 第十四章 重载运算与类型转换
+
+1. 对于二元运算符，左值给第一个参数，右值给第二个
+
+2. 运算符的本质是一次调用，重载时选用与内置类型一致的含义
+
+3. 重载作为成员或非成员（P493）：
+
+   1. `=, [],(),->`必须成员
+   2. 复合赋值运算符(`+=, -=`等)一般是成员，但非必须
+   3. 改变对象状态的运算符或与给定类型密切相关（递增，递减，解引用）一般是成员
+   4. 具有对称性可能转换任意一端的对象（算数，相等性比较，关系，位运算）一般非成员
+
+4. 输入/输出运算符
+
+   1. 输出运算符减少格式化操作，让用户控制
+   2. 必须是非成员函数
+
+5. 算术运算符一般是在一个局部变量内，操作结束返回局部变量的副本，通常定了算数运算符也会定义对应的复合赋值
+
+6. 很有可能不存在理想的关系运算
+
+7. 最好同时定义下标运算符的常量和非常量版本
+
+8. 区分前置和后置运算符
+
+   ```c++
+   StrBlobPtr operator++();
+   StrBlobPtr operator++(int); // 通过形参确定后置版本，并不实际使用
+   StrBlobPtr operator--();
+   StrBlobPtr operator--(int);
+   ```
+
+9. 箭头运算符永远不能丢掉成员访问这个定义，只能改变从那个对象获取成员
+
+10. 函数调用运算符
+
+    ```c++
+    struct absInt {
+        int operator()(int val) const { // 定义方式和其他operator一样
+            return val < 0 ? -val: val;
+        }
+     }
+    ```
+
+11. 注意lambda也是一个函数对象，编译器将表达式翻译成一个未命名类的未命名对象，如下例中
+
+    ```c++
+    stable_sort(..., 
+                [sz](const string &a, const string &b)
+                { return a.size() < b.size(); } );
+    // 其行为类似于
+    class ShorterString {
+        public:
+        	ShorterString(size_t n): sz(n) { } // 对应捕获的变量
+        	bool operator()(const string &a, const string &b) const
+                { return a.size() < b.size(); }
+    }
+    // 故而stable_sort也可以直接用这个类进行替换
+    stable_sort(..., ShorterString()) // 等价于第一个lambda版本
+    ```
+
+12. P510罗列了一些标准库的函数对象，比如我们使用`vector<string *>`，并希望通过string*这么一个指针来完成排序，如果我们手写lambda去完成compare的工作会报错，因为不同对象的指针间的比较是未定义的，但是`less<string*>`在本例中可以作为良好定义的compare函数
+
+13. 很多函数共享一种函数形式，如`int(int, int)`（形参两int，返回一个int），则可以定义一个函数表来存储指向这些同函数形式的指针，如：`map<string, int(*)(int, int)> binops;`。但注意只能存相同形式的函数指针，相同形式的lambda和类调用运算符都不行（本质都是类类型）
+
+14. 函数类型可以使用function模板（P512），和上条的函数表结合，例：`map<string, function<int(int, int)>>`，这时相同形式的lambda和类调用运算符就可以了
+
+15. 注意不能直接将重载的函数存入function类型的对象里，如下例
+
+    ```c++
+    int add(int i, int j) { return i + j; }
+    Sales_data add(const Sales_data&, const Sales_data&);
+    map<string, function<int(int, int)>> binops;
+    binops.insert({"+", add}); // 错误，add有二义性
+    
+    // 解决方法一：存储指针
+    int (*fp)(int, int) = add;
+    binops.insert( {"+", fp} );
+    // 解决方法二：运用lambda
+    binops.insert({"+", [](int a, int b) {return a + b;} })
+    ```
+
+16. 类型转换运算符
+
+    1. 类类型转换(class-type conversions)，也被称为用户定义的类型转换
+
+    2. 形式 `operator type() const`
+
+    3. 只要type能作为函数的返回类型就可以，所以不允许type为数组或函数类型，但允许转换为对应的指针/引用类型
+
+    4. 没有显式的返回值也没有形参，必须是成员函数，一般是const
+
+    5. C++11后可以用`explicit`关键字修饰，应用如下：
+
+       ```c++
+       class SmallInt {
+           public:
+           	SmallInt(int i = 0): val(i) {
+                   if (i < 0 || o > 255) {
+                       throw std::out_of_range("Bad SmallInt Value");
+                   }
+               }
+           	// 编译器不会自动进行转换
+           	explicit operator int() const {return val}
+           private:
+           	std:size_t val;
+       }
+       SmallInt si;
+       si = 4; // 正确，将4隐式转为SmallInt，再调用SmallInt::operator=，构造函数不是explicit，所以可行
+       
+       si + 3; // 错误，意图将si隐式地转换为int，再执行加法，但类型转换为隐式，不满足explicit的要求
+       
+       static_cast<int>(si) + 3; // 正确，显式使用了类型转换
+       
+       ```
+
+    6. 防止二义性类型转换
+
+       1. 为两个类提供相同的类型转换（同时定义A->B和B->A）
+       2. 多个转换规则，可以联系到一起（A->B->C），所以不要创建两个转换源/对象都是算术类型的类型转换
+
+    7. 重载函数的二义性
+
+       1. 比如两个类都定义了相同类型成员，那么隐式调用时编译器会不清楚应该隐式初始化哪个类，如下
+
+          ```c++
+          struct C {
+              C(int);
+              // 其他成员
+          }
+          
+          struct D {
+              D(int);
+              // 其他成员
+          }
+          void manip(const C&);
+          void manip(const D&);
+          manip(10); // 二义性，不知道隐式使用C还是D
+          manip(C(10)); // 显式调用正确
+          
+          // ====================
+          // 即使是不同的算术类型，如下
+          struct C {
+              C(int);
+              // 其他成员
+          }
+          
+          struct E {
+              E(double);
+              // 其他成员
+          }
+          void manip(const C&);
+          void manip(const E&);
+          manip(10); // 也会产生二义性
+          ```
+
+    8. 成员和非成员的二义性
+
+       假设我们使用 `a op b`这么一个方法，编译器不清楚如下版本使用哪一个
+
+       ```c++
+       a.op(b);  // a的成员函数op
+       op(a, b); // 非成员函数op
+       ```
+
+## 第十五章 面向对象程序设计（OOP）
+
+不多说，这章全是重点
+
+1. *派生类（derived class）* 继承（inherit）*基类（base class）*
+
+2. 对于一些函数，基类希望它的派生类各自定义合适的版本，就将其声明为*虚函数（virtual function）*，示例：
+
+   ```c++
+   class Quote {
+       public:
+       	std::string isbn() const;
+       	virtual double new_price(std::size_t n) const;
+   }	
+   ```
+
+3. 派生类一定要使用*类派生列表（class derivation list）*明确指出它继承了那些基类（C++支持多继承，不同于Java）。形式：先是一个冒号，随后跟着以逗号分隔的基类列表，如下：
+
+   ```c++
+   // 第二个public表示继承来的成员默认public，其他访问控制关键字类似
+   public Bulk_quote : public Quote {
+       public:
+       	(virtual) double net_price(std::size_t n) const override;
+       	// 有了后面加上的override关键字，表明了这是一个重新定义的虚函数
+       	// 前面的virtual可加可不加
+       	// 虚函数在派生类中也是隐式的虚函数
+   }
+   ```
+
+4. 动态绑定，如`double net = item.net_price(n);`，此时`net_price`尚未被确定是哪一种版本，*运行时绑定（run-time binding）*。我认为这也算是C++不完全多态的一种体现
+
+5. 派生类必须使用基类的构造函数来初始化它的基类部分，比如下例
+
+   ```c++
+   Bulk_quote(const std::string &book, double p, std::size_t qty, double disc):
+   	Quote(book, p), min_qty(qty), discount(disc) { }
+   ```
+
+   除非我们像本例一样特别指出，否则基类部分会执行基类的默认初始化
+
+6. 如果有一个静态成员，那么它在整个继承体系中都是唯一的
+
+7. 派生类的声明不包含其派生类列表
+
+   ```c++
+   class Bulk_quote : public Quote;  // 错误，不应该包含派生列表
+   class Bulk_quote;                 // 正确
+   ```
+
+8. 如果用某个类做基类，那么它必须已经被定义而不仅仅是声明（基类不能是不完全类型）
+
+9. 防止继承的发生：
+
+   1. 使用`final`关键字（与Java的final大相径庭）
+   2. 例：`class Last final: Base {...}`，该例中Last不能再作为基类
+
+10. 即使一个基类的指针或引用能绑定在派生类对象上，我们也不能执行从基类到派生类的转换
+
+11. 可传递派生类给需要积累的类型的对象，但这样的话本质是派生类自己的部分被切掉（sliced down）只使用基类的部分
+
+12. 虚函数
+
+    1. 虚函数形参类型必须和被继承的一致，例外是当虚函数返回类型是类本身的指针或引用时
+    2. 同样的`override`关键字必须针对虚函数，且形参必须一致，只有虚函数能被重写
+    3. 也可以将函数指定成final，后续只要尝试覆盖都会报错
+    4. 虚函数可以拥有默认实参
+    5. 通过作用域运算符可以强行不要动态绑定，执行确定的版本，比如`baseP->Quote::net_price(42)`，称为回避动态绑定。一般用于重写的虚函数需要调用基类的虚函数版本时
+
+13. 抽象基类
+
+    1. 有纯虚函数成员的基类就是抽象基类
+    2. 明确告诉用户这个纯虚函数没有实际意义，无需真的定义，只要使用`=0`即可，且只能出现在声明处，例：`double net_price(std::size_t) const = 0;`
+    3. 也可以为纯虚函数提供定义，但必须在类的外部，类内不能为一个=0的纯虚函数提供函数体
+
+14. 派生类的初始化函数只初始化它的直接基类，如下
+
+    ```c++
+    Bulk_quote(const std::string &book, double p, std::size_t qty, double disc):
+    	Disc_quote(book, p, qty, disc) { }
+    ```
+
+    因为Disc_quote继承Quote，这样一来Bulk_quote的对象包含三个子对象，一个（空的）Bulk_quote部分，一个Disc_quote子对象以及Quote子对象。各个类分别控制其对象的初始化过程
+
+15. `protected`访问控制关键字
+
+    1. 和private一样，成员不受用户访问
+    2. 和public一样，对于派生类成员和派生类的友元可访问，private的话两者都不行，只有基类自己的成员和友元可以访问
+    3. 注意派生类的友元或派生类的派生类只能通过派生类对象来访问基类的protected成员，派生类无访问特权
+
+16. 在前面的本章第三点中也提到了公有继承，如下例
+
+    ```c++
+    public Bulk_quote : public Quote { ... }
+    ```
+
+    公有继承就是继承来的成员一样是public，私有，受保护继承同理，后两种继承不影响派生类和其友元的访问，目的是为了控制派生类用户对于基类成员的访问。如下：
+
+    ```c++
+    Public_Derived d1;  // public继承基类
+    Private_Derived d2; // private继承基类
+    d1.public_member(); // 能访问基类的public成员，在派生类中也是public的
+    d2.public_member(); // 不能访问基类的public成员，在派生类中时private的
+    ```
+
+17. 假定D继承了B：
+
+    1. 只有当D public继承B时，用户代码才能完成从派生类到基类的转换
+    2. 不管D以什么方式继承B，D的函数成员和友元都可以完成派生类到基类的转换，因为继承方式不影响他们的访问权限
+    3. 当D以public或protected继承B，D的派生类的成员和友元可以完成派生类到基类的转换；private继承就不行
+
+18. 友元关系不能继承（父亲/孩子的朋友不是我的朋友）
+
+19. 可以用using改变访问权限（P546），如下
+
+    ```c++
+    class Base {
+        public:
+        	std::size_t size() const { return n; }
+        protected:
+        	std::size_t n;
+    }
+    
+    class Derived: private Base { // 所有成员访问级别都为private
+        public:
+        	using Base::size;     // 访问级别又从private回到了public
+        protected:
+        	using Base::n;        // 访问级别又从protected回到了public
+    }
+    ```
+
+    我是这么理解的，权限继承本质是把基类所有的低权限承员加入到派生类相应的权限部分，所以派生类自己不受影响但派生类的派生类受影响，而using又再将部分成员进行调整
+
+20. 如果一个名字在派生类的作用域内无法解析，那么编译器会继续在外层的基类的作用域内寻找定义。即子类可以在父类的作用于里找，但反过来不行
+
+21. 名字查找优先于类型查找，也就是说，如果派生类的成员和基类的成员形参不一致，基类成员会被隐藏，哪怕基类成员的形参更加匹配。因为编译器一旦找到符合的函数就不会再往外层作用域查找了
+
+22. 所以如果派生类的虚函数与基类虚函数的形参不同，那么就无法通过基类的引用或指针找到并调用派生类定义的虚函数了（P550 例子）
+
+23. 一条基类的using声明语句（不指定形参列表）可以把该函数所有的重载实例都添加到派生类作用域中
+
+24. 虚析构函数
+
+    1. 如果基类的析构函数不是虚函数，那么delete一个指向派生类对象的基类指针将时未定义的
+    2. 阻止合成移动操作
+    3. 虚析构函数并不需要相应的拷贝构造和赋值操作
+    4. 大都基类都会定义一个虚析构函数，且一旦基类自己定义了移动操作，那么一定要显式定义拷贝操作
+
+25. 之前提到过，派生类初始化时也要提供基类部分的初始化。因此派生类在拷贝和移动操作时，也要同时拷贝和移动基类的成员。但是派生类的析构函数只销毁派生类自己的成员（避免重复delete）
+
+    ```c++
+    // 构造
+    D(const D& d): Base(d) /*D成员初始值*/ {/* ... */}
+    // 赋值
+    D &D::operator=(const D &rhs) {
+        Base::operator=(rhs);
+        // 其他操作
+        return *this;
+    }
+    ```
+
+    像上例中对基类成员拷贝，不然基类成员会执行默认初始化从而拷贝失败
+
+26. 执行析构函数时，先从派生类删除，然后沿着继承关系向上删除（孙类->子类->父类），销毁了派生类而为销毁基类时，对象处于*未完成的状态*
+
+27. 类不能继承默认的拷贝，移动函数，只能由编译器来为他们合成，但可以用using，如下例
+
+    ```c++
+    using Disc_quote::Disc_quote; // 继承Disc_quote的构造函数
+    ```
+
+    using不会改变访问级别，不能指定explicit和constexpr，不直接继承默认参数，而是有n个默认参数，就生成相应的n个构造函数，每个构造函数会省略一个带有默认实参的形参
+
+28. 当往容器里直接存放对象时，如`vector<Quote>`，那么把派生类放进容器，其派生类独有部分会被裁剪掉。可以使用（智能）指针，如`vector<shared_ptr<Quote>>`
+
+## 第十六章 模板和泛型编程
+
+1. 函数模板
+
+   1. 一个模板就是一个公式
+
+   2. 例如
+
+      ```c++
+      template<typename T>
+      int compare(const T &v1, const T &v2) {
+          /* */
+      }
+      ```
+
+      以关键字`template`开始，后跟一个*模板参数列表(template parameter list)*，即以逗号隔开的一个或多个模板参数列表
+
+   3. 编译器会推断出模板参数为我们实例化一个特定版本的函数（容器皆是如此）
+
+   4. 类型参数（一般是T，实际可为任意未知名字）可以用作返回类型，参数类型，变量声明和类型转换
+
+   5. 定义多个模板参数，可以用typename也可用class，如`template<typename T, class U>`
+
+   6. 也可以定义非类型参数（必须是常量表达式）
+
+      ```c++
+      template<unsigned N, unsigned M>
+      int compare(const char (&p1)[N], const char (&p2)[N]) {...}
+      ```
+
+      绑定到N, M的实参就是常量表达式
+
+   7. inline和constexpr关键字放在模板参数列表之后，返回类型之前，例`template<typename T> inline T min(const T&, const T&);`
+
+   8. 编译器遇到一个模板定义并不会生成代码，当实例化一个模板时才会生成代码
+
+2. 类模板（P584）
+
+   1. 经典的例子就是容器的定义和实例化
+
+   2. 类模板不是一个类型名，而是用来实例化类型，一个实例化的类型总是包含模板参数
+
+   3. 定义在类模板外的函数必须以template开始，形式如下
+
+      ```c++
+      template <typename T>
+      ret-type Blob<T>::member-name(param-list)
+      ```
+
+      Blob是类模板的名字
+
+      即使是类模板的类外构造函数也遵循这个形式
+
+   4. 当我们处于**类模板作用域**内时，编译器处理模板自身的引用可以自动找到匹配的实参，例
+
+      ```c++
+      BlobPtr& operator++();
+      // BlobPtr<T>& operator++();
+      ```
+
+   5. 在类外定义成员时，一开始并不在类的作用域内，直到遇到类名才进入作用域，例
+
+      ```c++
+      template <typename T>
+      BlobPtr<T> BlobPtr<T>::operator++(int) { // 这行后进入作用域
+          BlobPtr ret = *this; // 这里可以省略匹配实参了 
+          /* */
+      }
+      ```
+
+   6. 如果友元也是模板，类可以授权给所有也可以授权给部分友元实例，
+
+      1. 部分友元：此时友元关系限定在相同实例化的对象中，比如`a<T>`和`b<T>`是友元关系，那么`a<int>`的友元关系限定在`b<int>`而不会和`b<string>`构成友元关系
+
+      2. 如果需要让友元关系给所有a的实例化，那么定义友元时，a和b需要用不同的模板参数，例如
+
+         ```c++
+         template <typename T> class C {
+             friend class Pal1<T>; // 相同实例才是友元
+             template <typename X> friend class Pal2; // 所有实例都是C的友元
+             friend class Pal3; // 是C所有实例的友元
+         }
+         ```
+
+   7. 可以令模板参数成为友元，如`friend T;`
+
+   8. `typedef`可以引用一个实例但是不能引用模板，但是`using`可以
+
+      ```c++
+      template <typename T> using twin = pair<T, T>;
+      template <typename T> using bookNo = pair<T, unsigned>;
+      ```
+
+   9. 类模板可以声明static成员（P590），如`static std::size_t ctr;`的情况下，静态成员与模板参数无关，所有模板参数一致的实例共用一个静态成员，简单来说就是int公用int的静态，string公用string
+
+   10. 理所应当的，模板参数名不能重用
+
+   11. 和函数参数一样，声明中的参数名不必和定义时的参数名一致
+
+   12. 默认C++通过作用域运算符访问的是名字不是类型，如`T::size_type *p`，程序员会不清楚这是一个T的静态成员和p相乘还是在用模板参数定义一个p的变量。编译器会默认是前者，当我们需要用后者时，需要显式指出，如`typename T::size_type *p;`
+
+   13. 默认实参，如`template <class T = int>`
+
+   14. P595普通类的成员模板，当在类模板外定义一个成员模板时，必须同时为类模板和成员模板提供模板参数，类模板参数在前，成员自己的模板在后，如下所示
+
+       ```c++
+       template <typename T>
+       template <typename It>
+       	Blob<T>::Blob(It b, It e):
+       	data(make_shared(std::vector<T>(b, e)))
+           {}
+       ```
+
+   15. 相同模板可能出现在多个文件中，为了避免实例化开销就有了显式实例化
+
+       ```c++
+       extern template declaration;                  // 实例化声明
+       template declaration;                         // 实例化定义
+       
+       extern template class Blob<string>;           // 声明
+       template int compare(const int&, const int&); // 定义
+       ```
+
+       当编译器遇到extern声明，他不会在本文件生成实例化的代码，因为实例化声明为extern意味着程序其他位置必定存在该实例化的非extern（声明）定义，可能有多个extern，但只有一个定义
+
+       extern必须出现在任何使用该实例化模板的代码前
+
+   16. 一个类模板的实例化定义会实例化类模板内的所有成员，与单纯的模板函数不同，所以因为shared_ptr能运行时改变删除器，它不能直接保存，而需要运行时的跳转操作
+
+3. 模板实参推断（P600）
+
+   1. 顶层const被忽略，非const对象的引用或指针可以传递给const的引用或指针形参
+
+   2. 如果形参不是引用类型，可以对数组或函数类型完成指针转换
+
+   3. 显式模板实参：
+
+      ```c++
+      // 编译器无法推断T1，它未出现在函数参数列表中
+      template <typename T1, typename T2, typename T3>
+      T1 sum(T2, T3)
+      ```
+
+      因为无法推测，所以每次调用都需要给T1一个显示模板实参，如下：
+
+      ```c++
+      auto val = sum<long long>(i, j);
+      ```
+
+      显式模板实参按从左至右的顺序与对应的参数模板匹配，比如
+
+      ```c++
+      // 编译器无法推断T1，它未出现在函数参数列表中
+      template <typename T3, typename T2, typename T1>
+      T1 alter_sum(T2, T3)
+      
+      // 这种情况，T1属于最右模板，指定T1时一定要三个都指定，如
+      auto val = alter_sum(long long, int, long)(i, j)
+      ```
+
+      显式指定的实参可以完成正常的类型转换（算术类型）
+
+   4. 尾置返回
+
+      ```c++
+      template <typename It>
+      auto fcn(It beg, It end) -> decltype(*beg) {
+          /* ... */
+          return *beg;
+      }
+      ```
+
+   5. 可使用`remove_reference<decltype(*beg)>::type`脱去引用，P606介绍了一系列的引用操作函数
+
+   6. 函数指针必须指向模板的实例
+
+   7. 模板参数的引用正常使用底层const
+
+   8. 引用折叠（重点）
+
+      1. 当我们将一个左值传递给函数的右值引用参数，且此右值引用指向模板类型参数`T&&`时，编译器推定模板参数为左值引用类型
+      2. `X& &, X&& &, X& &&`都被折叠成`X&`
+      3. 类型`X&& &&`折叠成`X&&`
+      4. 引用折叠意味着如果函数参数是一个指向模板类型参数的右值引用，如`T&&`，那么它可以被绑定到一个左值，且推定出的函数模板是一个左值引用，所以既可以传左值也可以传右值
+      5. P610提供了一个因为是左值引用还是右值的二义性导致的错误案例
+
+   9. `std::move`就灵活运用了引用折叠（P611），通过`T&&`作为形参，然后在通过`remove_reference<T>::type&&`保证不论是输入左值->T为左值引用，还是右值->T为右值，都能够最终返回右值
+
+   10. 转发（保存类型和const），结论上使用`std::forward()`。书上同样和`std::move`使用`T&&`作为模板形参只能解决当传入参数为左值时，能够维持其左值/右值属性和底层const，但是一旦后续的函数为接受右值引用的函数时，就会发生不能使用左值初始化右值形参的问题
+
+   11. `std::forward`必须使用显式模板实参来调用，forward返回显示实参类型的右值引用
+
+       1. `forward<T> -> T&&`
+       2. `forward<T&> -> T& && -> T&`
+
+4. 重载模板时，编译器选择更加特例化的版本，非模板函数会比模板函数更加匹配
+
+5. 对于重载函数，如果缺少声明，编译器会选择最接近的函数从而发生难以预知的错误
+
+6. 参数包：
+
+   1. 模板参数包/函数参数包：零个或多个模板/函数参数
+
+   2. 一般用省略号指出，如下
+
+      ```c++
+      template <typename T, typename...Args> // Args为模板参数包
+      void foo(const T &t, const Args& ... rset); // rset为函数参数包
+      
+      // 可以用sizeof对包的大小求值
+      cout << sizeof...(Args) << endl; // 模板参数的数目
+      cout << sizeof...(args) << endl; // 函数参数的数目
+      ```
+
+   3. 可利用递归调用一层层剥掉包里的参数
+
+7. 模板特例化：
+
+   ```c++
+   template <>
+   int compare(const char* const &p1, const char* const &p2) { /* ... */ }
+   ```
+
+   定义一个专门处理char*类型的版本
+
+   其中空的<>意味着我们为所有的参数模板都提供了实参
+
+   1. 特化版本本质是一个**实例**而非重载版本
+
+   2. 为了特化一个版本，原模版的声明必须在作用域中，且使用任何模板实例代码前，特化版本的声明也必须在作用域中，如果没有声明，编译器会使用原模板再实例化一个新的实例，很难查找错误
+
+8. 类模板特例化
+
+   1. 必须在原模版定义所在的命名空间里特例化它
+
+   2. 类模板可以部分特例化，只提供部分模板实参，本身也是一个模板，使用时还是要为位置的那个部分模板提供实参
+
+   3. 也可以指特例化成员而不是整个类，如下：
+
+      ```c++
+      template<>             // 特例化一个模板
+      void Foo<int>::Bar() { // 特例化Foo<int>的成员Bar（）
+          // ...
+      }
+      
+      Foo<string> fs; // 实例化
+      fs.Bar();       // 实例化
+      Foo<int> fi;    // 实例化
+      fi.Bar()        // 特例化版本的Foo<int>::Bar()
+      ```
