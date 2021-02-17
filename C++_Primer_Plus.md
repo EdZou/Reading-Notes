@@ -2148,3 +2148,309 @@ map和set，这一部分也属于最熟悉的数据结构了
     7. 当有多个虚基类时，这些虚的子对象同样按照**派生列表**出现的顺序构造。具体过程：编译器按照直接基类的顺序依次检查，如果没有虚基类就类似先添加到队列中，有虚基类先初始化虚基类，检查结束后再对队列中的基类初始化。
 
     8. 注意析构销毁的顺序依然与构造顺序完全相反
+
+## 第十九章
+
+#### 控制内存分配
+
+1. new操作的本质
+
+   1. 调用一个`operator new / operator new[]`的标准库函数，该函数分配一块**足够大，原始的，未命名的内存空间**
+   2. 编译器完成相应的构造函数构造这些对象并传入初始值
+   3. 分配空间并构造完成，返回对应的指针
+
+2. delete操作的本质与之对应：
+
+   1. 将指针所指的对象中的元素执行对应析构函数
+   2. 调用`operator delete / operator delete[]`标准库函数释放内存
+
+3. 以上两操作都可以自定义
+
+   1. 可以定义成成员函数也可以定义在全局作用域里
+   2. 如果执行操作的类类型，编译器会首先在**类和基类**的作用域里找，找不到再去全局作用域里找
+   3. 找得到就用找到的版本，找不到就用标准库的版本
+   4. 可以用作用域运算符指定编译器往全局作用域找
+
+4. 不抛出`bad_alloc`异常的接口定义
+
+   1. 形式
+
+      ```c++
+      void *operator new(size_t, nothrow_t&) noexcept;
+      void *operator new[](size_t, nothrow_t&) noexcept;
+      void *operator delete(void*, nothrow_t&) noexcept;
+      void *operator delete[](void*, nothrow_t&) noexcept;
+      ```
+
+   2. 类型`nothrow_t`是定义在new头文件里的一个struct，这个类型不包含任何成员
+
+   3. new的头文件中定义了一个名为`nothrow`的const对象，用户通过这个对象申请nothrow版本。与析构函数类似，delete也不允许抛出异常，所以用noexcept
+
+   4. 用户可在全局作用域里自定义上述任何一个，在类内上述函数是**隐式静态**的，因为new和delete不能操控类的任何成员，static关键字可加可不加
+
+   5. 这俩函数返回值必定是void*，且`size_t`不能有默认值，new时分配对象所需的字节数量，new[]传入存储数组元素所需的空间
+
+   6. 用户可以重载new/new[]，但是这个形参的版本：
+
+      ```c++
+      void *operator new(size_t, void*);
+      ```
+
+      **无论如何不能**被用户重载
+
+5. （P729）使用定位new来构造对象：
+
+   1. `new (place_address) type [size] {}`等形式
+   2. `place_address`必须是一个指针
+   3. 当通过地址值调用new，定位operator使用`void *operator new(size_t, void*);`在一个特定的，预先分配的内存地址上分配对象
+   4. 与`construct`类似，但是`construct`必须要在`allocator`的内存上分配，但是传入定位new的指针不需要指向operator new分配的内存，甚至不要是动态内存
+
+6. 学到这里很明显了，析构函数只清除给定对象但是不会释放空间（还得靠delete）
+
+7. 运行时类型识别（run-time type idenfication， RTTI）由两个运算符实现：
+
+   1. `typeid`，用于返回表达式类型
+   2. `dynamic_cast`，用于将基类的引用或者指针安全地转换为派生类的指针或引用
+   3. 当上述运算符被用于某类型的指针或引用时，且被使用的类型含有虚函数，运算符将使用指针或引用所绑定对象的动态类型
+   4. 适用于：我们想使用**基类对象的指针或引用**执行某个**派生类操作**并且该操作**不是虚函数**。当操作被定义为虚函数时，编译器将根据对象的动态类型自动地选择正确的函数版本
+   5. 可能的话定义虚函数而不是使用RTTI
+
+8. `dynamic_cast`详解
+
+   1. 三种形式：
+      1. `dynamic_cast<type*>(e)` ，e必须是一个有效指针
+      2. `dynamic_cast<type&>(e)` ，e必须是一个左值
+      3. `dynamic_cast<type&&>(e)` ，e不能是左值
+   2. 三种形式type都必须是一个类类型，且通常含有虚函数
+   3. 三种形式中，e必须是：type的public派生类，public基类或者干脆就是目标type的类型。不符合以上任意一种会转换失败
+   4. 转换失败时，如果目标是指针类型，返回0；如果目标是引用类型，抛出`bad_cast`异常
+   5. 对空指针执行dynamic_cast，结果是所需类型的空指针
+
+9. `typeid`详解
+
+   1. 形式`typeid(e)`，其中e是任意表达式或类型的名字，e的顶层const被忽略
+
+   2. 返回一个常量对象（type_info）的引用
+
+   3. 如果e是引用，返回所引对象的类型
+
+   4. 当作用于数组或函数时，返回的是数组或函数类型而不是自动转换成对应的指针类型
+
+   5. 当e不属于类类型或类内未定义虚函数时，typeid直接返回一个运算对象的静态类型；当类类型至少定义了一个虚函数时，typeid的结果直到运行时才会获得
+
+   6. 用于如下情况：
+
+      ```c++
+      // 两指针本质指向同一个对象
+      Derived *dp = new Derived;
+      Base *bp = dp;
+      
+      // 应用typeid
+      // 如果两指针指向同一类型
+      if (typeid(*bp) == typeid(*dp)) {}
+      // 如果指针指向某种确定的类型
+      if (typeid(*bp) == typeid(Derived)) {}
+      ```
+
+      注意因为typeid指向对象，需要使用`*bp`取出对象，如果作用于指针，返回的是该指针静态编译时的类型
+
+10. （P734）说明了如何使用RTTI，比如用以定义一个可以对所有继承体系的类进行比较的equal虚函数，在派生类的equal里先将被比较的类（不管是该类的基类，派生类或自身都不会出错）转换为该类类型再进行比较
+
+11. （P735）typeinfo的操作
+
+12. 枚举类型：
+
+    1. C++定义了限定作用域的枚举类型`enum class enum_name {a, b, c};`
+
+    2. 不限定作用域的形式（省略class关键字）：`enum enum_name {a, b, c};`
+
+    3. 如果enum未命名，只能在定义enum的同时定义它相应的对象
+
+    4. 限定枚举成员的名字遵循常规作用域原则，在作用域外不可访问；不限定的enum成员和enum语句处于一个作用域
+
+    5. 如果有两个枚举类型其成员内容和限定都一致，即使名字不同，还是重复，如下：
+
+       ```c++
+       enum color { red, yellow, green };
+       enum color2 { red, yellow, green }; // 报错，重复定义
+       enum class color3 { red = 1, yellow = 2, green = 1 }; // 正确，枚举的成员被隐藏
+       
+       color eye = green; // 正确
+       color3 eye3 = green; // 错误，找到color的枚举类型，不匹配
+       color3 eye3 = color3::green // 限定作用域后正确匹配
+       ```
+
+       从color3可见，枚举值可以重复，但初始化时提供的初始值必须是constexpr。同样的也可以在任何需要constexpr的地方使用枚举成员
+
+       默认枚举值从0开始，从左至右依次加1
+
+       可以将enum作为switch的表达式，而枚举值作为case分支
+
+       因为是constexpr，还可以作为非类型模板的形参（P580例子），或在类的定义里初始化枚举类型的静态数据成员
+
+    6. 不限定作用域的enum对象或成员会自动转为整型：
+
+       ```c++
+       int i = color::red; // 正确，不限定作用域隐式转化为整型
+       int j = color3::red; // 错误，限定enum不会隐式转换
+       ```
+
+    7. C++11之前，成员都是由某种整型表示的，之后可以定义想使用的类型，如下
+
+       ```c++
+       enum intValues : unsigned long long {/* ... */}
+       ```
+
+       对于限定作用域的enum，不指定enum的潜在类型，默认成员类型为int
+
+       不限定作用于的enum没有默认类型，只要潜在类型够大能容纳枚举值即可
+
+    8. C++11后前置声明enum必须指定成员大小（如上），限定作用域可以不指定，默认int。前置声明后，之后的定义必须和前置声明的成员大小相同，不然报错
+
+    9. 即使整型值恰好和enum的成员同类型，也不能作为enum的实参使用
+
+    10. 但可以将非限制作用域的enum成员传给整型实参，此时，enum的成员类型会被**提升成int或者更大（取决于枚举值的潜在类型，即大小）**
+
+13. 成员指针
+
+    1. 是可以指向类的**非静态成员**的指针，指向类的成员而非对象。注意静态成员不属于任何类，所以指向静态成员的指针和普通指针没有区别
+    2. 形式如`const string Screen::*pdata`，需要指出`classname::`。因为const指针指向的对象可以是const也可以不是，也就是pdata可以指向任何Screen对象的任何一个string成员
+    3. 也可以不定义返回类型（或成员变量类型）直接用auto，如：`auto pdata = &Screen::contents`
+    4. 成员指针受访问控制符限制，所以如果需要函数返回指针，可以在类内定义一个static的成员，返回一个成员指针(P741)，如`const string Screen::*pdata = Screen::data();`
+    5. 使用时需要把它绑在对象上：`auto s = myScreen::*pdata`
+
+14. 成员函数指针：
+
+    1. 与成员指针类似，但如果函数由重载版本必须指明，如下：
+
+       ```c++
+       char (Screen::*pmf2)(Screen::pos, Screen::pos) const;
+       pmf2 = &Screen::get;
+       ```
+
+       没有第一对括号，这个定义`char Screen::*pmf2(Screen::pos, Screen::pos) const;`会被视为定义一个名为pmf成员函数，并返回Screen类的一个char成员。因为声明的是普通函数不能使用const限定符，会被认为无效
+
+       注意成员函数与指向它的成员函数指针间没有自动转换规则
+
+       ```c++
+       pmf = &Screen::get;
+       pmf = Screen::get; // 错误，没有自动转换规则，要显式取地址
+       ```
+
+    2. 使用方法
+
+       ```c++
+       Screen myScreen, *pScreen = myScreen;
+       char c1 = (pScreen -> *pmf)();
+       char c2 = (myScreen.*pmf)(0, 0);
+       ```
+
+       两种皆可
+
+    3. 使用using或者typedef会让代码更容易理解，如下
+
+       ```c++
+       using Action = char (Screen::*)(Screen::pos, Screen::pos) const;
+       Action get = &Screen::get;
+       ```
+
+       P744有使用函数表和别名相结合的例子
+
+    4. 成员函数指针因为未绑定到特定对象上（需利用`.*`或`->*`），不能直接传递给特定的算法，解决方法如下
+
+       1. function，形如`function<bool (const string&)> fcn = &string::empty;`
+
+       2. mem_fn（头文件functional中），function我们给定了成员的调用形式，mem_fn让编译器推定成员类型，可根据成员指针直接推：
+
+          ```c++
+          find_if(svec.begin(), svec.end(), mem_fn(&string::empty));
+          
+          // mem_fn生成的对象既可以通过指针调用也可以通过对象的引用调用
+          auto f = mem_fn(&string::empty);
+          f(*svec.begin());
+          f(&svec[0]);
+          ```
+
+          可以认为mem_fn生成的callable object有一对重载符，一个接受string&一个接受string*
+
+       3. bind，**必须**把函数中用于表达执行对象的隐式形参显式，如下
+
+          ```c++
+          // 实参和mem_fn一样，可以是指针也可以是引用
+          auto f = bind(&string::empty, _1);
+          f(*svec.begin()); // 实参为对象，传引用
+          f(&svec[0]);      // 实参为指针  
+          ```
+
+15. 嵌套类
+
+    1. 外层和内层的类相互之间访问没有特殊权限
+
+    2. 和成员一样，嵌套类必须声明在外层类内部，但是定义在内外皆可，在外定义时需要以外层类的名字限定
+
+    3. 嵌套类虽然没有访问特权，但是可以随意访问外层类的成员，不需要限定
+
+    4. 构造函数也不例外，如下
+
+       ```c++
+       TextQuery::QueryResult::QueryResult (parameter_list)
+           : initialization list { function body }
+       ```
+
+       第一个限定符表示`QueryResult`是`TextQuery`的嵌套类，第二个表示这是构造函数
+
+    5. 接上例，如果在`QueryResult`（嵌套类）中定义了静态成员，那么这个成员位于`TextQuery`（外层类）的作用域之外
+
+    6. 嵌套类在名字查找时遵循一般规则，但必须查找外层类的作用域
+
+16. `union`：
+
+    1. 本质是一个所有数据成员共用基地址的一种数据结构（用于找大端小端）
+    2. 任意时刻只能有一个数据成员有效，当一个数据成员赋值后，其他成员便成**未定义**
+    3. 分配给union对象的存储空间的大小至少要能容纳它最大的数据成员
+    4. 含有构造函数和析构函数的类类型也可以是union的成员，默认union的成员都是public，也可以用访问控制修饰，这点和struct一样
+    5. union不能作为基类也不能继承，所以不能含有虚函数
+    6. 匿名union在其所在的作用域内该union的成员都可以直接访问
+    7. 当union保存的是简单的内置成员值时，我们可以用普通赋值语句改变union的值，但是当成员为含有构造函数和析构函数的类类型时：
+       1. 当我们要把union的类型改成类类型时，需要调用其构造函数
+       2. 当我们要把union的类类型改成其他类型时，需要调用其析构函数
+       3. 而且如果类的拷贝/赋值等操作定义为=delete，那么union的相应操作也会=delete
+    8. 为了追踪union中的值类型，我们通常定义一个独立的对象称为union的判别式(discriminant)，P752定义一个enum来判定
+
+17. 类定义在函数内部称为局部类
+
+    1. 局部类所有成员都必须完整定义在类的内部
+    2. 不允许声明静态成员
+    3. 对外层访问受限，只能访问外层的类型名，静态变量和enum成员，不能访问外层作用于的局部变量
+    4. 局部类内的嵌套类也必须遵循局部类的限制
+
+18. P756位域Bitfield，嵌入式常见，限定bit的位数，必须是整形或者enum类，如下：
+
+    ```c++
+    typedef unsigned int Bit;
+    class File {
+        Bit mode: 2; // mode占2位
+        Bit modified: 1; 
+        /*
+        ...
+        */
+    }
+    ```
+
+    取地址符&不能作用域位域，也没有指针能指向类的位域
+
+19. `volatile`
+
+    1. 表示它的值由程序直接控制之外的过程控制
+    2. 比如多线程，比如时钟，因为这些值会被频繁更改，但是编译器的优化会将某一瞬间的值存入寄存器加快速度，volatile就是告诉编译器不要进行这样的优化
+    3. 只能将volatile对象的地址赋给指向volatile的指针，只有引用是volatile时才能用他初始化volatile对象
+    4. 不能用合成的拷贝/移动操作对volatile对象操作，因为合成的成员接受普通形参而非volatile形参
+
+20. 链接指示: `extern "C"`
+
+    1. C++使用链接指示指出任意非C++函数所用的语言
+    2. 不能出现在类/函数定义的内部
+    3. extern "C" 表示对C语言的支持，extern ”FORTRAN“表示对fortran语言的支持，依此类推
+    4. 当include放在extern指示的部分，表示该头文件声明的所有函数都是用另一语言编写的
+    5. 指向其他语言函数的指针：`extern "C" void (*pf)(int)`，其他语言的函数指针不能和C++的函数指针互相指，会报错
+    6. 也可以把C++的函数导出给C语言（一般不用，C无法理解构造函数，析构函数这类OOP操作）
