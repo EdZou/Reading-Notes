@@ -274,9 +274,228 @@ const double AspectRatio = 1.653;
 
 ## 条款07：为多态基类声明virtual析构函数
 
+#### why virtual 析构函数？
 
+这个条款在使用factory模式时很有用，好比说P40的例子，工厂函数**返回一个base class的指针，指向新生成的derived class对象**。同时为了遵守工厂函数的规则，返回的对象必须**位于heap**，这也就意味着我们需要手动释放。
 
+如果这时，我们的base class有一个non-virtual的析构函数，就会引发**灾难**--如果通过base class的指针试图删除derived class，就很可能保留derived class独有的部分未删除进而导致内存泄漏
 
+解决方法很简单，就是给base class一个virtual的析构函数
 
+virtual函数的目的是允许derived class的实现可以customized，一般class不含virual函数往往意味着它并不意图被用作一个base class
 
+#### 不能滥用虚构函数
 
+欲实现出virtual函数，对象必须携带某些信息，用以决定运行时调用哪一个virtual版本。这个信息通常由**vptr（virtual table pointer）**指出，vptr指向一个由**函数指针**构成的数组，称为**vtbl（virtual table）**，这个指针自然也会占用内存大小，比如下面的这个类：
+
+```c++
+class Point {
+    public:
+    	Point(int xCoord, int yCoord);
+    	~Point();
+    private:
+    	int x, y;
+}
+```
+
+在这个类中，因为虚构函数需要vptr指针，这个类的占用从64 bits -> 96 bits(32 位系统) / 128 bits(64位系统)，增加了50%-100%的占用。
+
+所以虚构函数不能滥用
+
+#### STL容器都是不带virtual析构函数的，不要企图继承
+
+polymorphic base class（多态性质基类，如P40的例子，需要一个基类指向派生类并且能使用派生类的性质）应该声明一个virtual析构函数，如果class带有任何virtual函数，也应该拥有一个virtual析构
+
+如果class声明的目的不是为了作为基类或作为多态，就不该有virtual析构函数
+
+## 条款08：别让异常逃离析构函数
+
+C++并不禁止析构函数throw异常，但它并不鼓励，比如下面这个例子
+
+```c++
+class Widget {
+    public:
+    	...
+        ~Widget() {...}; // 析构函数允许抛出异常
+    void doSomething() {
+        std::vector<Widget> v;
+        ...              // v在省略部分被自动销毁
+    }
+}
+```
+
+假设v中有多个元素，第一个元素析构时抛出异常，这时其他的元素还是正常被销毁，但这时又出现了第二个抛出异常的元素，对于C++而言，**同时出现两个异常程序不结束就会出现未定义行为**。本例中的vector换成std或TR1的任意容器都会导致未定义行为
+
+P45例子中，假设一个DBConnection有建立连接的静态函数，我们建立一个DBConn来进行管理，那么可以在析构函数中使用try...catch...方法，try to `db.close()`，catch到异常后记录并使用`std::abort()`来避免未定义行为（也可以不abort直接将异常吞掉，当然这不是好主意）
+
+以上的方法不论吞不吞掉异常都不够好，因为无法对”导致close抛出异常“的情况作出反应
+
+下面的策略会更好一些
+
+即重新设计DBConn接口，**使得client有机会对可能出现的问题作出反应**。比如DBConn可以自己提供一个close函数，因而赋予客户一个机会得以处理”因该操作发生的异常“，如下：
+
+```C++
+class DBConn {
+    public:
+    	...
+        void close() { // 定义供给用户使用
+            db.close();
+            closed = true;
+        }
+    
+    	~DBConn() {
+            if (!closed) {
+                try {
+                    db.close();
+                } catch(...) {
+                    ... // 记录失败，然后abort或者吞下异常
+                }
+            }
+        }
+    private:
+    	DBConnection db;
+    	bool closed;
+}
+```
+
+这是给用户一个处理的机会，如果他们不需要这个机会大可以忽略我们提供的close()函数而使用DBConn的析构函数去调用
+
+总结：
+
+1. 析构函数绝对不要throw异常，应该捕捉所有异常并处理
+2. 如果用户需要对某个操作的运行异常做出反应，那么class中应该提供一个普通函数以供操作
+
+## 条款09：决不在构造和析构过程中调用virtual函数
+
+（P49）假设我们有一个基类，它的构造函数里调用了自己的virtual函数，那么即使派生类自己重写了虚函数，在调用派生类的构造函数时发生以下过程：
+
+1. 在初始化派生类时，首先会调用基类的构造函数，从基类开始构造，而此时不仅派生类自己还完全没有开始初始化，在此时运行期类型信息也会把**此时的派生类认为是基类（不完全状态）**，且在结束基类部分的初始化开始派生类独有部分初始化前，该对象不会成为一个派生类对象
+
+   这时构造函数就会使用基类自己的virtual函数，进而引发错误
+
+2. 析构函数也是同样的道理。调用基类的析构函数时，这时派生类独有的部分都已经被销毁，只剩下了基类部分，此时也被认为是基类而非派生类对象
+
+一般这种错误比较明显，一些编译器会发warning
+
+但还有一些如下情况：
+
+```c++
+class Transaction {
+    public:
+    	Transaction() { init(); }        // 明面上调用non-virtual
+    	virtual void logTransaction = 0;
+    	...
+    private:
+    	void init() {
+            ...
+            logTransaction();            // 实际上在这里还是调用了virtual
+        }
+}
+```
+
+这种错误编译器不会发现，这里是一个=0的pure virtual函数还算幸运，因为被调用到程序会马上中止，如果不是的话就非常难debug
+
+总结：
+
+在构造和析构时调用的虚函数永远不会下降到派生类的版本，如果非要让基类使用派生类的版本，可以像P51那样，在派生类里定义一个private static再传给基类的构造函数
+
+## 条款10：令operator=返回一个reference to *this
+
+连锁赋值：
+
+```c++
+int x,y,z;
+x = y = z = 1;
+// 其本质是
+x = (y = (z = 1));
+```
+
+为了实现连锁赋值，赋值运算符要返一个指向操作符左侧的实参的引用，如下
+
+```c++
+Widget& operator=(const Widget& rhs) {
+    ...
+    return *this;                      // 返回左侧对象的引用
+}
+```
+
+包括赋值相关运算如+=，-=等都要遵循这个条款
+
+虽然不强制，但是最好遵守
+
+## 条款11：在operator=中处理”自我赋值“
+
+虽然一般不会直接用到，但是自我赋值可能在不经意间发生，比如：
+
+```c++
+a[i] = a[j]; // i == j时，潜在的自我赋值
+*px = *py;   // px,py指向同一个对象时，潜在的自我赋值
+```
+
+我们需要**自赋值安全(self-assignment-safe)**来完成条款13，14中资源管理的要求
+
+两种解决方法对比：
+
+1. 使用**证同测试（identity test）**
+
+   ```c++
+   Widget& Widget(const Widget &rhs) {
+       if (this = &rhs) return *this;
+       
+       delete pb;
+       pb = new Bitmap(*rhs.pb);
+       return *this
+   }
+   ```
+
+2. 用临时值保存再执行赋值
+
+   ```c++
+   Widget& Widget(const Widget &rhs) {
+       Bitmap *pOrig = pb;
+       pb = new Bitmap(*rhs.pb);
+       delete pb;
+       return *this
+   }
+   ```
+
+这两种方法都可以行得通，但是第一种方法如果频率过高，因为identity test需要成本，它会使代码更”大“一些（包括原始码和目标码）并导入一个新的**控制流（control flow）**，两因素都会降低执行速度，prefetching，caching和pipelining等指令的的效率都会降低
+
+第三个替代方案（swap）：
+
+```c++
+class Widget {
+    ...
+    void swap(Widget& rhs) {
+    ...
+    Widget& Widget::operator=(const Widget &rhs) {
+        Widget temp(rhs);   // copy动作委托给构造函数
+        swap(temp);
+        return *this
+    };
+    }
+}
+```
+
+代码清晰性略低，但是将copy的动作委托给构造函数是一个很聪明的做法，有时编译器可据此生成更高效的代码
+
+## 条款12：复制对象时勿忘记其每一个成分
+
+简单的来说就是当用户自定义复制操作时，编译器不会为用户检查是否复制了所有的元素
+
+P58尤其注意当定义派生类拷贝操作时，不显式把基类的copy操作完成，编译器会**按默认初始化一个新的基类部分**
+
+任何时候为derived class写copy操作时，都要小心翼翼地copy其基类部分，而且往往基类的copy都是private，只能通过copying函数调用，如下：
+
+```c++
+PriorityCustomer::operator=(const PriorityCustomer& rhs) {
+    logCall(...);             // 记录copy操作
+    Customer::operator=(rhs); // 对base class的部分拷贝,显式调用base的copy
+    priority = rhs.priority;
+    return *this;
+}
+```
+
+还有就是，**不要试图**让一个copy操作（比如copy构造）共用另一个拷贝操作（如copy赋值），当重复代码很多时，应该定义**第三个函数**让两个操作使用以减少重复代码。
+
+## 条款13：以对象管理资源
