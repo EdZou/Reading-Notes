@@ -499,3 +499,302 @@ PriorityCustomer::operator=(const PriorityCustomer& rhs) {
 还有就是，**不要试图**让一个copy操作（比如copy构造）共用另一个拷贝操作（如copy赋值），当重复代码很多时，应该定义**第三个函数**让两个操作使用以减少重复代码。
 
 ## 条款13：以对象管理资源
+
+P62给出了一个C++ primer里也有类似的例子，好比有一个函数f里囊括了对象的create和delete，这样可行吗？答案是不行的
+
+一方面，如果有return分支在delete前，很可能尚未释放内存，程序就已经结束了。而且就算程序员注意到了这点，之后负责维护代码的程序员也很可能不注意导致内存泄露
+
+解决方法：
+
+把资源放入对象，然后利用C++**析构函数自动调用机制**来保证资源被释放（智能指针），如：
+
+```c++
+std::auto_ptr<Investment> PInv(createInvestment());
+```
+
+两个关键想法：
+
+1. 获得资源后立刻放进管理对象（Resource Acquisition is Initialization，RAII）
+2. 管理对象运用析构函数保证资源被释放（即条款8中不让异常逃出析构函数）
+
+接下来就是C++ primer中一样的shared_ptr和unique_ptr，这里不再赘述
+
+但注意这里提出了C++ primer中未提到的环状引用（即已经无用的两个元素互相引用），python中对这个问题的处理方法是直接所有引用数量都减一，之后如果环状引用中有的元素减一仍然有引用，就证明它还在被使用
+
+有个问题是auto_ptr和tr1::shared_ptr两者调用析构函数都是使用delete而非delete[]，这意味着在动态分配的array上使用这两者并不理想
+
+如果非要，Boost有例如boost::scoped_array和boost::shared_array这样的针对C++动态分配数组的类
+
+## 条款14：在资源管理类中小心copying行为
+
+条款13中的观念适用于heap-based资源，然而有时候有些资源并不在heap上，这是需要我们自定义的资源管理类
+
+P66假设我们使用C API处理类型为Mutex的互斥对象，含有以下两函数
+
+```c++
+void lock(Mutex* pm);
+void unlock(Mutex* pm);
+
+// 管理类如下：
+class Lock {
+    public:
+    	explicit Lock(Mutex* pm): mutexPtr(pm) {
+            lock(mutexPtr);
+        }
+    	~Lock() { unlock(mutexPtr); }
+}
+```
+
+而用户的使用也符合RAII：
+
+```c++
+Mutex m;
+...
+{
+    Lock(&m);    // 初始化时就锁定了Mutex
+    ...          // 退出作用域Lock销毁时自动释放
+}
+
+// 然而当Lock被复制时？
+Lock ml1(&m);
+Lock ml2(ml1);
+```
+
+面对复制有几种选择：
+
+1. 禁止复制（之前提到的Uncopyable）
+
+2. 对底层资源使用**引用计数法**，只不过这次释放资源的行为是unlock而非默认的delete，即：
+
+   ```c++
+   class Lock {
+       public:
+       	explicit Lock(Mutex* pm): mutexPtr(pm, unlock) {
+               lock(mutexPtr.get());  // get()会返回非shared指针，并不好
+           }
+       private:
+       	std::tr1::shared_ptr<Mutex> mutexPtr;
+   }
+   ```
+
+3. 复制底层资源，即deep copy
+
+4. 转移底层资源的所有权（unique_ptr类似的实现）
+
+## 条款15：在管理资源类中提供对原始资源的访问
+
+在条款14中也提到了，我们可以通过`pInt.get()`来显式地把智能指针转换为普通指针
+当然，auto_ptr和tr1::shared_ptr都支持通过指针取值操作符（operator->和operator*）**隐式**转化成底部的普通指针
+
+P70例子，给了一个如果从Font往FontHanle转换需要显式get转换，虽然是用户把FontHandle对象交给Font类，但是每当用户需要使用FontHanlde时都需要get，这显得很繁琐
+
+而P71提供了一种隐式转换会更轻松自如：
+
+```c++
+class Font {
+    public:
+    	...
+        operator FontHandle() const { return f; } // 需要时直接隐式转换
+    	...
+};
+```
+
+但这样会增加错误发生机会，如下：
+
+```c++
+Font f1(getFont());
+FontHandle f2 = f1;  
+// 原意是拷贝Font对象，现在反而变成了先将f1转化为FontHandle再拷贝给f2
+```
+
+这非常不好，很有可能f1将其FontHandle销毁，但f2不知道，从而产生一个空悬指针
+
+总结：
+
+1. 资源管理类（RAII class）应提供一个**取得所管理资源的方法**
+2. 显式和隐式的转换都可以，显式会更安全但繁琐，隐式方便但有隐患
+
+## 条款16：成对使用new'和delete时要采取相同形式
+
+这个条款总结就一句话
+
+如果调用new时使用[]，你必须在相应的delete时也使用[]；如果调用new时未使用[]，在相应的delete调用时也不该使用[]
+
+注意`typedef`可能将[]隐藏，但还是需要调用delete[]。所以也最好不要对数组对象调用`typedef`
+
+## 条款17：以独立语句将new ed对象置入智能指针
+
+考虑在以下语句中：
+
+```c++
+processWidget(std::tr1::shared_ptr<Widget>(new Widget), priority());
+```
+
+这里的参数含有三个步骤：
+
+- 调用new Widget
+- 调用priority()
+- 调用std::tr1::shared_ptr构造函数
+
+C++和Java/C#不同，上述三个步骤的差距是弹性的，而另外两个语言有特定次序
+
+这也意味着如果执行顺序就像上述顺序一样，那么有可能在第二个步骤调用priority()时，priority抛出异常导致中断，这时，new Widget已经被执行，但创造的对象却还未放入智能指针导致**内存泄露**
+
+所以要用**独立语句**将对象放入智能指针：
+
+```c++
+std::tr1::shared_ptr<Widget> pw(new Widget);
+processWidget(pw, priority);
+```
+
+## 条款18：让接口容易被正确使用，不易被误用
+
+理想上，如果用户企图使用某个接口而不能获得他想要的结果，编译器不该通过；如果编译器通过了编译，那么这个作为就应该是用户想要的
+
+P79直接导入新类型以防用户错用
+
+P80**以静态函数替换对象来表现某个特定月份**，因为non-local static的初始化顺序不确定
+
+比如所有C++ STL容器都统一提供了一个size()方法来获知容器内的对象数量
+
+再比如在条款13中使用智能指针管理对象，有时候用户会忘记智能指针，我们可以直接在fatory函数中就直接返回一个智能指针（优秀的设计）：
+
+```c++
+std::tr1::shared_ptr<Investment> createInvestment();
+```
+
+又比如智能指针中不是期待用户使用我们定义的析构函数，而是在使用智能指针时就定义好deleter也是一种良好的设计
+
+将原始指针传给智能指针构造函数，比先初始化智能指针指向null再改变赋值更好（见条款26）
+
+## 条款19：设计class犹如设计type
+
+1. 新的对象如何被创建和销毁？
+
+   构造和析构函数，以及内存管理部分：
+
+   operator new; operator new[]; operator delete; operator delete[]
+
+2. 对象的初始化和赋值的区别？
+
+   初值列表，以及Object::Object( params ) 和 operator=()的区别
+
+3. 新的type对象pass-by-value意味着什么？
+
+   传值本质传副本，依赖于copy构造函数
+
+4. 什么是新type的”合法值“？
+
+   只有某些数值集是有效的
+
+5. 新type需要套配合某个”继承图系“吗？
+
+   需要配合会受到那些class的舒服，特别是他们的函数是”virtual还是non-virtual“（条款34和36），如果允许其他class继承自定义的class，那会影响自定义的析构函数virtua与否（条款7）
+
+6. 新type需要什么样的转换？
+
+   希望T1->T2，就必须在class T1内写一个operator T2或在class T2内息一个non-explicit-one-argument函数（可被单一实参调用）的函数，隐式显式选一个（条款15）
+
+7. 什么操作符和函数对此新type合理？
+
+   见条款23，24，26
+
+8. 什么标准函数需要驳回？
+
+   这些声明成private
+
+9. 谁来取用新type的成员？
+
+   区分public，protected，private
+
+10. 什么是新type的undelared interface？
+
+    对效率，异常安全性以及资源运用（多任务锁定和动态内存）提供何种保证？保证将带来约束
+
+11. 新type有多一般化？
+
+    如果并非一个type而是一个type家族，就应该用template
+
+12. 真的需要一个新的type吗？
+
+    说不定单纯定义一个或多个non-member函数或template或更合适
+
+## 条款20：宁以pass-by-reference-to-const替换pass-by-value
+
+默认C++是以传value的方法，实际都是传副本，默认的函数返回值也同样是传副本，这样往往会多次拷贝，十分昂贵
+
+注意pass-by-reference-to-const中的const是最重要的，保证引用的源对象不会被改变。传引用也可以解决**slicing问题**，当一个derived class以传值形式且形参为base class时会被slice但传引用不会
+
+和我在CSDN上查到的一篇文章一样，C++ primer的笔记我也提到过，引用的底层是指针，**传引用本质=传指针**
+
+小型对象copy的消耗也可能很大，比如有些编译器允许把一个原生double放进缓存器内，但拒绝把仅有一个double的对象放入
+
+还有一个理由是自定义对象的大小可能发生变化，之前copy消耗不大，在维护后可能type大小改变，传value就不理想了
+
+## 条款21：必须返回对象时，别妄想返回其reference
+
+这个条款书中主要分析了几种试图返回reference的方法：
+
+1. 创建新对象两种：
+
+   ```c++
+   const Rational& operator*(const Rational& rhs, const Rational& lhs) {
+       Rational res(lhs.n * lhs.n, rhs.n * rhs.n);
+       return res;
+   }
+   ```
+
+   让res作为local value在栈区被创建
+
+   第一种问题出在如果这样返回引用，作为local value的res已经被销毁了，会变成空悬指针
+
+   ```c++
+   const Rational& operator*(const Rational& rhs, const Rational& lhs) {
+       Rational* res = new Rational(lhs.n * lhs.n, rhs.n * rhs.n);
+       return res;
+   }
+   ```
+
+   让res作为new的对象在堆区被创建
+
+   第二种问题出在难以delete，因为这是个被返回的指针，调用它的函数不一定能delete它，会造成内存泄露，尤其是在以下情况：
+
+   ```c++
+   Rational w,x,y,z;
+   w = x*y*z; // 本质operator*(operator*(x,y),z)
+   ```
+
+   本质有两次new，需要两次对应的delete，中间那次new出来的指针已经被隐藏了，必定内存泄露
+
+2. 使用local static对象
+
+   ```c++
+   const Rational& operator*(const Rational& rhs, const Rational& lhs) {
+       static Rational* res;
+       res = ...;
+       return res;
+   }
+   ```
+
+   当出现以下情况时：
+
+   ```c++
+   Rational a,b,c,d;
+   ...
+   if ((a*b) == (c*d)) {...}
+   ```
+
+   这时`(a*b) == (c*d)`永远是true，因为本质是local static == local static
+
+正确方法，就返回一个对象：
+
+```c++
+inline const Rational operator*(const Rational& rhs, const Rational& lhs) {
+    return Rational res(lhs.n * lhs.n, rhs.n * rhs.n);
+}
+```
+
+结论是，当在必须”返回一个reference和返回一个object“中抉择，选择行为正确的就好，效率就交给编译器厂商了:)
+
+## 条款22：将成员变量声明为private
+
