@@ -798,3 +798,361 @@ inline const Rational operator*(const Rational& rhs, const Rational& lhs) {
 
 ## 条款22：将成员变量声明为private
 
+本章主要是把public和protected的可能性否决，这样就只能用private修饰成员变量了
+
+如果用public，那么更好的做法是使用**public成员函数**，并通过成员函数访问（并修改）成员变量，这样用户在使用我们的类时，也不用在意是否需要()来调用，更重要的是这样便于**封装**
+
+比如我们需要同一个接口实现一个需要在space和efficiency上trade-off，那么public函数可以为所有的可能提供”弹性的实现“
+
+封装的重要性：如果对client隐藏成员变量，可以**确保class约束条件总是获得维护**，因为只有成员函数可以影响他们，而且也**保留了日后变更实现的权力**
+
+**成员变量的封装性和“当其内容改变时可能造成的代码破坏量”成反比**（条款23）
+
+基于上述结论，假设我们有public的成员变量，而最终取消了它，那么所有使用它的客户码都会被破坏，这是一个不能预测的巨量，所以public完全没有封装性，protected相似，取消成员变量会导致所有derived class都被破坏，同样没有封装性
+
+也就意味着，**protected并不public更有封装性**
+
+## 条款23：宁以non-member、non-friend替换member函数
+
+P98提供了一个clear函数的member版本和non-member版本，如下：
+
+```c++
+// member
+class WebBrowser {
+    public:
+    	...
+        void clearEverything();
+    	...
+};
+// non-member
+void clearBrowser(WebBrowser &wb) {
+    wb.clearCache();
+    wb.clearHistory();
+    wb.removeCookies();
+}
+```
+
+OOP要求数据以及操作数据的函数应该绑定在一起，但在这里并不正确
+
+OOP同样要求数据尽可能地被封装，然而与直观相反，member函数的封装性更低。且non-member函数可以降低耦合度
+
+封装性：
+
+1. 封装的本质是如果某些东西被封装，那他就不再可见，越多的东西被封装，就有越少的人可以看到他们，而越少的人看到意味着我们也有更大的弹性去变化他
+2. 现在考虑对象内的数据。如何量测有多少代码可以看到某一块数据呢？粗糙的量测：看到函数数量越多，封装性越低
+3. non-member函数并不增加“能够访问class内的private成分”的函数数量（此例中，member的话有4个函数，而non-member只有3个（不包括自己，类外函数无法访问private））
+
+以上论述有两点值得注意：
+
+1. 这个论述只适用于non-member且non-friend函数（这两种和member有同样访问权力）
+2. 虽然因为封装性让函数成为该class的non-member，但它可以是**另一个类的member函数**
+
+这里non-member函数可以与class在同一个namespace中，因为namespace可以跨越多个源码文件而class不能，有如下组织方式
+
+```c++
+// 头文件 webbrowser.h
+namespace WebBrowserStuff {
+    class WebBrowser { ... }; // 核心机能，所有客户都需要的
+    ...                       // non-member函数
+}
+
+// 头文件 webbrowserbookmarks.h
+namespace WebBrowserStuff {
+    ...                       // bookmarks相关功能
+}
+
+// 头文件 webbrowsercookies.h
+namespace WebBrowserStuff {
+    ...                       // cookies相关功能
+}
+```
+
+**以上正是C++标准库的组织方式**，C++标准库由几十个头文件组成，这允许客户只对他们所用的那一小部分系统形成编译依赖（条款31），但class成员函数不能这样切割
+
+所以如果某个客户想写下和影响下载有关的便利函数，只要在` WebBrowserStuff`建立一个头文件并声明那些便利函数即可
+
+## 条款24：若所有参数皆需类型转换，请为此采用non-member函数
+
+当**建立数值类型**时，令class支持隐式类型转换是可以接受的，如下：
+
+```c++
+class Rational {
+    ...
+    const Rational operator*(const Rational& rhs) const;
+}
+
+// 但尝试混合式运算，只有一半行得通
+result = oneHalf * 2;  // 成功, oneHalf.operator*(2)
+result = 2 * oneHalf   // 失败, 2.operator*(oneHalf)
+```
+
+错误发生在，当以上本质操作试图调用int的operator*时，并没有Rational的版本，于是试图去找non-member版本：`result = operator*(2, oneHalf)`，找不到就报错
+
+而成功的版本，本质是如下过程
+
+```c++
+const Rational temp(2);
+result = oneHalf * temp;
+```
+
+理想应该是定义一个non-member，如下：
+
+```c++
+const Rational operator*(const Rational& lhs, const Rational& rhs) {
+    return Rational(......);
+}
+```
+
+## 条款25：考虑写出一个不抛异常的swap函数
+
+swap是异常安全性编程的脊柱，以及用来处理自我赋值的一个常见机制
+
+默认的std版本swap只要支持copying就可以通过copy的本质方法完成swap操作
+
+如果我们直接在std空间里进行修改，那么：
+
+```c++
+namespace std {
+    template<>
+    void swap<Widget>( Widget& a,
+                       Widget& b) {
+        swap(a.pImpl, b.pImpl);
+    }
+}
+```
+
+这个方法通不过编译，因为本质是一个std::swap的total template specialization版本，`swap<Widget>`，表示这是T为Widget的特化。
+
+虽然std一般不允许改变，但可以为标准template制造特化版本，以上行为这点是合法的
+
+代码通不过编译的原因是pImpl是private，无法直接访问
+
+正确的方法和C++ primer上一样：
+
+```c++
+class Widget {
+    public:
+    	...
+         void swap(Widget& other) {
+            using std::swap;
+            swap(pImpl, other.pImpl);
+        }
+}
+
+// 修改后的特化版本
+namespace std {
+    template<>
+    void swap<Widget>( Widget& a,
+                       Widget& b) {
+        a.swap(b);
+    }
+}
+```
+
+但如果假设我们的类是函数模板，如下：
+
+```c++
+template<typename T>
+class WidgetImpl {...};
+template<typename T>
+class Widget {...};
+```
+
+再将上面的std::swap进行特化：
+
+```c++
+// partial特化版本
+namespace std {
+    template<typename T>
+    void swap< Widget<T> >( Widget<T>& a,
+                            Widget<T>& b) {
+        a.swap(b);
+    }
+}
+```
+
+这个不合法，因为C++允许类template进行partial specialize但不支持function template do so
+
+如果定义一个std::swap的重载版本，如下：
+
+```c++
+// 重载版本
+namespace std {
+    template<typename T>
+    void swap( Widget<T>& a,
+               Widget<T>& b) {
+        a.swap(b);
+    }
+}
+```
+
+这是不正确的，因为std虽然允许特化template，但不允许添加新的template
+
+理想的答案就是用一个non-member函数，但不再将non-member函数作为std::swap的重载或者特化版本，并将它放在WidgetStuff namespace中，以便使用
+
+```c++
+namespace WidgetStuff {
+    ...
+    template<typename T>
+    class Widget {...};
+    ...
+    template<typename T>
+    void swap( Widget<T>& a,
+               Widget<T>& b) {
+        a.swap(b);
+    }
+}
+```
+
+之后对Widget对象的置换都会找到这个函数
+
+编译器看到swap的调用，会找到适当的swap，编译器默认喜欢更特化的Widget版本，所以使用`using std::swap`让std版本暴露在查找范围中，由于此时特化版本swap还未定义好，所以使用std版本
+
+不使用`std::swap(obj1, obj2);`的原因：影响编译器的挑选，不可能再挑选一个更适合T当前版本的swap函数
+
+总结如下：
+
+1. 如果默认的swap函数效率可以接受那就不需要做额外的工作
+2. 效率不足做以下尝试：
+   1. 提供一个public的swap成员函数，该函数绝**不该抛出异常（仅限于member函数，条款29有详细说明）**
+   2. 在class或template的命名空间提供一个non-member的swap函数，并令其调用swap成员函数
+   3. 如果在类内定义特化的swap函数，注意用`using std::swap`让std的swap函数在编译器的视野内暴露可见
+
+## 条款26：尽量延后变量定义式出现的时间
+
+核心原因：只要定义了，在定义时和在离开作用域时需要析构，承担成本
+
+假设定义后还未使用又抛出异常，等于变相增加了不必要的成本，所以最好把定义延后到确实需要它的时候
+
+对于循环的变量定义：
+
+1. 定义在循环外：1次构造+1次析构+n次赋值
+2. 定义在循环内：n次构造+n次析构
+
+根据class的赋值成本是否低于（一次构造+一次析构）来决定，一般定义在循环内
+
+## 条款27：尽量少做转型操作
+
+cast相关的操作，C++ primer里已有详细介绍，这里大概说一下
+
+1. 旧式转型（C-style）：`(T)expression or T(expression)`，两种效果一致
+2. `const_cast<T>`：修改常量属性（移除/添加）
+3. `dynamic_cast<T>`：将类“安全向下转型”，唯一**无法用旧式语法执行来的动作**，也是唯一**可能耗费重大成本的动作**
+4. `reinterpret_cast<T>`：实际**取决编译器**的低级转型，**不可移植**
+5. `static_cast<T>`：强迫隐式转换，如：non-const -> const，int -> double，void*指针 -> typed，pointer-to-base -> pointer-to-derived。无法将const -> non-const（`const_cast`专属）
+
+任何一种类型转换都会产生一些代码，如下情况：
+
+```c++
+class Base {...};
+class Derived: public Base {...};
+Derived d;
+Base* pb = &d; // 会有个offset在运行期被加在Derived*指针上
+```
+
+这个例子意味着，一个对象可能拥有一个以上的地址（Base和Derived版本指针指向不同地址），C，Java，C#都不能，只有C++有，且多继承一定会发生
+
+一个似是而非的代码：
+
+```c++
+class SpecialWindow: public Window { // derived class
+    public:
+    	virtual void onResize() {
+            static_cast<Window>(*this).onResize();
+            ...
+        }
+}
+```
+
+这里试图调用当前对象Window部分的onResize()函数，但本质是调用了**稍早时候转型动作建立的"this对象的base部分"的副本**上的onResize()函数，这意味着如果onResize()原本会对对象的数据进行处理，现在只能处理暂时副本，导致SpecialWindow独有的这部分onResize()函数会对数据起作用，但Window的这部分因为本质处理临时副本而没有作用，看起来就像“伤残”状态一样
+
+正确的写法就是直接用`Window::onResize()`
+
+`dynamic_cast`一般是在需要对derived对象处理但却又只有base指针指向derived对象，如果继承体系有4层，则需要可能在对象进行4次调用，消耗很大
+
+有两个一般性做法可以避免：
+
+1. 使用容器并存储直接指向derived的指针（C++ primer里不推荐这样，每个derived类都要一个特定容器不划算）
+2. 在base类里提供一个什么也没做的virtual函数供给derived类去实现
+
+这两种只是`dynamic_cast`的替代方案，不必过于抗拒`dynamic_cast`，但**必须避免连串(cascading) dynamic_casts**，如下：
+
+```c++
+typedef std::vector<std::tr1::shared_ptr<Window)> > VPW;
+VPW winPtrs;
+...
+for (VPW::iterator iter = winPtrs.begin();
+     iter != winPtrs.end(); ++iter) {
+    if (SpecialWindow1 *psw1 = 
+        dynamic_cast<SpecialWindow1*>(iter->get())) {...}
+    else if (SpecialWindow2 *psw2 = 
+        dynamic_cast<SpecialWindow2*>(iter->get())) {...}
+    else if (SpecialWindow3 *psw3 = 
+        dynamic_cast<SpecialWindow3*>(iter->get())) {...}
+    ...
+}
+```
+
+又大又慢，而且每次继承体系有变更都需要更改，基础不稳
+
+总结：
+
+1. 尽量避免转型，特别是需要效率时的`dynamic_cast`
+2. 非要转型，就把动作隐藏在某个函数背后
+3. 用C++转型而非旧式转型
+
+## 条款28： 避免返回handles指向对象内部成分
+
+比如一个const成员函数return传出了private成员变量的引用，那么这个成员变量本质上是public了，这正是条款3中bitwise constness的一个结果
+
+指针，引用和迭代器都算handles，返回一个private成员（不论是变量还是private或者protected的函数）的handle，随之而来的是**降低对象封装性的风险**
+
+绝不该令一个函数返回一个**访问级别较低**的handles
+
+而且就算做如下处理：
+
+```c++
+const Point& upperLeft() const {return pData -> ulhc;}
+```
+
+也可能导致对象已经被销毁，但handle还在造成空悬指针
+
+## 条款29：为“异常安全”而努力是值得的
+
+当异常抛出时，异常安全性的函数会：
+
+1. 不泄露任何资源（P127，new操作异常会导致mutex不释放）
+2. 不允许数据破坏（P127，new操作异常会破坏掉赋值的指针，以及其他的数据imageChanges已被改变）
+
+解决mutex被释放问题：
+
+如条款13，14中提到，设计一个资源管理类，如条款14中的Lock类`Lock ml(&mutex);`
+
+在解决数据破坏前，先陈述异常安全函数的保证：
+
+1. 基本承诺：如果异常被抛出，程序内的任何函数仍然保持在有效状态之下。没有任何对象或数据结构回因此被破坏，所有类内对象都保持着前后一致的状态
+2. 强烈保证：异常被抛出，程序状态不改变，（atomicity，要么完全成功，要么回滚到调用前）
+3. 不抛掷（nothrow）保证：承诺绝不抛出异常，总能完成预先被承诺的功能
+
+异常安全码必须提供上述三种保证之一。
+
+nothrow对于C part of C++的部分不能保证，C++使用容器的抛出bad_alloc异常，可以提供nothrow保证
+
+而对于绝大部分函数，都要从前两种选一种
+
+于是对P127的函数做出以下修改：
+
+1. 使用shared_ptr指向Image，帮助自动销毁
+2. 重排imageChanges发生的顺序
+3. 把imgSrc做一个copy and swap，对副本进行修改，修改成功再置换
+
+强烈保证过于难以实现，即使有两个函数f1，f2都是强烈保证函数，那么假设f1执行成功，f2失败，也难以退回到f1执行前的状态。而且copy-and-swap往往十分昂贵，没有现实意义
+
+函数提供的“异常安全性保证”遵循木桶效应，取决于调用的所有函数的“异常安全性”最弱的那个
+
+## 条款30：透彻了解inlining的里里外外
+
+
+
+
+
