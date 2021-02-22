@@ -1152,7 +1152,167 @@ nothrow对于C part of C++的部分不能保证，C++使用容器的抛出bad_al
 
 ## 条款30：透彻了解inlining的里里外外
 
+inline函数：
 
+1. 优势：看起来像函数，用起来也像，又不承受函数调用带来的额外开销，这是因为编译器的最优化机制通常被用来设计那些“不含函数调用”的代码
+2. 缺点：inline函数的观念是，“对此函数的每一次调用”都以函数的本体直接**替代**，这会**增加目标码（obj code）的大小**，进而导致额外的paging行为，降低cache命中率，以及伴随来的效率降低
 
+但缺点上换一个角度看，如果函数本体比“函数调用”所产出的目标码还要小，inline可以减小obj code大小并提高cache命中率！
 
+注意inline只是对编译器的一个**申请**，**不是强制命令**
 
+inline函数通常**一定被置于头文件中**，因为C++大多数编译器都是在编译期间进行inlining，为此他们需要知道函数长什么样子
+
+template通常也置于头文件中，一旦被使用，编译器为了将它具现化，需要知道它长什么样子，而这个过程与inlining无关。如果这个template具现的所有函数都是inlined，那么这个template应该被声明成inline版本；如果没有理由要求每一个template具现的函数都是inline，就避免
+
+所有对**virtual函数**的调用都会使inlining**落空**，因为直至执行前，编译器都不知道函数本体，无法替换
+
+一个看上去是inline的函数实际是不是inline取决于编译器，所幸绝大部分编译器在如果无法将申请的inline实现时，会报warning
+
+编译器通常**不对通过函数指针进行的调用**实施inlining
+
+不要对构造和析构函数inline，编译器又是会生成构造和析构函数的outline副本，从而获得指针指向这些函数，而且如P138所示，构造和析构的内部其实有很多对于异常的精细处理被隐藏了
+
+一旦设计者决定改变f，那么所有用到f的客户端程序都必须重新编译，如果f是non-inline，则只要客户选重新link就好了，如果是dll，那么改变的函数甚至可以不知不觉被应用程序吸纳
+
+大多debugger面对inline函数**束手无策**，仅仅能在debug版本的程序中禁止发生inlining
+
+## 条款31：将文件间的编译依存关系降至最低
+
+当改变某个文件，导致全世界都重新编译和链接时（Xilinx实习时的PYNQ项目:P），意味着文件中的依赖比较严重。
+
+文件之间的依赖可以举个例子，几乎所有的源码都会include其他的头文件，这时被include的头文件发生更改就会使include它的源文件全部重新编译
+
+类要求如P140中，private成员的定义式而非仅仅是声明，因为编译器**必须在编译期**知道对象的大小
+
+这个问题在Java，Smalltalk上并不存在，这些语言都是在编译时，分配一个指针的空间指向具体的实现。这类设计常被称为**pimpl idiom(pointer to implementation)**，这样使P142中的Person类彻底和其他细目类分离了，完成接口与实现的分离。
+
+该分离的关键在于以**声明的依存性**替换**定义的依存性**，这也是编译依存最小化的本质：尽量让头文件自我满足，做不到也让他和声明式而非定义式相依：
+
+1. 如果使用obj的指针或引用可以完成任务，就不要用obj本身
+2. 如果可以，尽量以class声明式代替定义式（让提供class定义式的任务从“声明所在地”转移到“内含函数调用”的客户代码）
+3. 为声明式和定义式提供不同的头文件。两种方法，一种将声明式作为handle class，如P145，在初始化时指定指向的定义式对象；一种是使用interface class（没有成员变量，无构造函数，当然C++不禁止成员变量和成员函数，与node，java等真正的interface不同），接口都定义为pure virtual函数
+
+Interface class的用户为这种类创建新对象方法：调用一个特殊函数，扮演**真正被具现化的derived class的构造函数**，这种函数被称为**factory函数或virtual构造函数**。factory函数返回指针，指向动态分配得到的对象，一般该函数在interface class内被声明为static，如下
+
+```c++
+class Person {
+    public:
+    	...
+        static std::tr1::shared_ptr<Person> 
+            create(const std::string& name,
+                   const Date& birthday,
+                   const Address& addr); // factory函数
+    	...
+};
+...
+// 客户使用
+std::tr1::shared_ptr<Person> pp(Person::create(name, birthday, addr));
+```
+
+Handle class和interface class解除了接口和实现间的耦合关系
+
+坏处：
+
+1. 在handle class上，每一个对象消耗的内存需要增加一个impl pointer大小，且pImpl必须初始化并指向动态分配来的impl obj，因而承受动态内存分配和销毁的和开销，以及遭遇bad_alloc的可能性
+2. 对于interface class而言，每个函数都是virtual，所以每次调用都有**间接跳跃（indirect jump）**成本。且interface class的派生类一定有一个vptr，增加内存数量
+
+## 条款32：确定你的public继承塑模出is-a关系
+
+公开继承意味着is-a的关系，is-a关系就是好比base和derived，derived一定is a base class，但反过来并不成立，C++中的public继承严格遵守“is-a”关系
+
+比如企鹅和鸟的例子，有几种做法：
+
+1. 企鹅继承鸟fly的方法，如果被调用就返回异errorMsg
+2. 不为企鹅定义fly方法，只要被使用编译器就会发现
+
+但现实的理解和public继承有偏差：
+
+P154举出的长方形（base）和正方形（derived）的关系，长方形可以独立修改长/宽，但正方形的长宽始终一致，导致了derived没法实现base的特征
+
+## 条款33：避免遮掩继承而来的名称
+
+这里的遮掩，在C++ primer中叫隐藏
+
+derived class中如果定义了和base class一样的名字，那么根据编译器查找规则（C++ primer中也提到了，derived->base->namespace->global，什么时候找到什么时候停止），编译器会先找到derived内部的名字，并停止查找，进而导致base内的同名函数/变量被隐藏
+
+如果想要达到overload的效果，那么最好使用using声明（C++ primer中的部分）
+
+如果是derived只想继承base的一部分函数，那么不应该用public继承而应该用private继承，并使用简单的转交函数，如下
+
+```c++
+class Derived: private Base {
+    public:
+    	virtual void mf1() { Base::mf1(); } // 转交函数，隐式inline
+}
+```
+
+转交函数是不支持using的老式编译器的替代
+
+## 条款34：区分接口继承和实现继承
+
+1. 成员函数的接口总是会被继承
+
+2. 声明一个pure virtual函数是为了让derived classes只继承函数接口。但是其实base class可以为pure virtual函数提供一份定义，只是调用方法**必须指明class名称**
+
+3. impure virtual函数的目的，就是为了让derived classes同时继承函数的接口和默认实现。在P164有一个例子，好比说modelA和modelB都是继承base类Airplane而来，他们都使用了默认的函数去划定航线。这时我们需要一个modelC派生类，但是忘记定义ModelC自己的函数版本，这可能导致极大的航空安全问题，于是有了第四种
+
+4. 上述问题的根本原因是：ModelC没有明确说”我要“就继承了默认的函数。于是有了以下写法：
+
+   ```c++
+   class Airplane {
+       public void fly(const Airport& destination) = 0;
+       protected:
+       	void defaultFly(const Airport& destination);
+       ...
+   }
+   
+   // 默认继承演变成以下形式：
+   class ModelA: public Airplane {
+       public:
+       	virtual void fly(const Airport& destination) {
+               defaultFly(destination);
+           }
+       	...
+   }
+   ```
+
+   将原本的impure virtual函数转化为pure virtual并提供相应的default函数以供derived主动继承
+
+   而这里defaultFly是non-virtual这点也很重要，没有derived class应该重新定义该函数（条款36）
+
+   有些人会觉得分别提供default和virtual接口会造成接口污染，而这里也可以用到上面说到的pure virtual函数也可以有自己的定义这一点解决，得出代码如下：
+
+   ```c++
+   class Airplane {
+       public void fly(const Airport& destination) = 0;
+       ...
+   };
+   // 提供pure virtual的定义
+   void Airplane::fly(const Airport& destination) {...};
+   
+   // 默认继承接着演变成以下形式：
+   class ModelA: public Airplane {
+       public:
+       	virtual void fly(const Airport& destination) {
+               Airplane::fly(destination);
+           }
+       	...
+   }
+   ```
+
+   当然这种做法会使习惯上protected的函数成为public（小缺点）
+
+5. 声明non-virtual是为了令derived class有继承函数的接口及一份强制性的实现
+
+## 条款35：考虑virtual函数以外的其他选择
+
+#### Non-Virtual Interface（NVI）手法实现Template Method模式
+
+P170例子简单地说，就是提供一个public的接口函数，调用private的virtual实现函数（与C++模板Template并无关联），把这个public函数称为是这个private virtual函数的外覆器（wrapper）
+
+这样可以在wrapper中完成调用virtual函数需要的**事前和事后工作**：事前如获得mutex，log，验证等，事后包括释放mutex，验证等等。如果直接调用virtual函数，这些工作都难以完成
+
+virtual函数在NVI手法下没必要一定是private，比如需要调用base class的兄弟，这样virtual函数需要时protected
+
+#### 藉由Function Pointers实现strategy模式
