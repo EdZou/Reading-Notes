@@ -1315,4 +1315,202 @@ P170例子简单地说，就是提供一个public的接口函数，调用private
 
 virtual函数在NVI手法下没必要一定是private，比如需要调用base class的兄弟，这样virtual函数需要时protected
 
-#### 藉由Function Pointers实现strategy模式
+#### 藉由Function Pointers实现Strategy模式
+
+如P172的例子，设计一个计算游戏人物血量的函数，这样的计算**完全不需要**人物本身的成分信息，对以这种情况，我们可以让构造函数接受一个指向健康计算函数的**指针**。
+
+将strategy设计模式与virtual相比较，有以下有趣的特性：
+
+- 同一个类但不同的实体对象可以使用不同的健康计算函数（P172 EvilBadGuy）
+- 已知的任务健康计算函数可以在运行期变更（P172可以设定成员函数setHealthCalculator来替换健康计算函数）
+
+说白了就是**本例中的健康计算函数已经不属于继承体系了**，这也同样意味着**本例中所有的健康计算函数**都没有访问non-public部分
+
+如果需要访问，那就要减少class的封装性，比如声明non-member函数为friend或为其部分成员变量提供public的访问函数，这需要权衡利弊
+
+#### 藉由tr1::function完成Strategy模式
+
+上例Strategy模式里限制了只能使用non-member函数，为什么不能使用如成员函数，lambda呢。这里可以使用tr1::function模板来解决这个问题
+
+如下：
+
+```c++
+typedef std::tr1::function<const GameCharacter&> HealthCalcFunc;
+```
+
+函数对象和function兼容即可，即参数可被**隐式**转换为const GameCharacter&且返回类型可被隐式地转换为int
+
+std::bind改变接受参数的数量（C++ primer中有），也可以增加弹性
+
+## 条款36：绝不重新定义继承而来的non-virtual函数
+
+如下代码：
+
+```c++
+class B {
+    public:
+    	void mf();
+    ...
+};
+class D: public B { ... };
+D x;                      // x是一个D对象
+// 如果有下述行为
+B* pB = &x;
+pB->mf();
+
+D* pD = &x;
+pD->mf();
+```
+
+如果mf()是一个non-virtual函数且D定义了自己的mf()函数，那么通过pB和pD调用的函数不是一样的
+
+这是因为B::mf和D::mf因为是non-virtual函数，所以都是**静态绑定**的，所以通过pB调用的non-virtual函数永远是B定义的函数
+
+另一方面，virtual函数是动态绑定，同样的上述调用方法，如果mf()是virtual函数，那么不论通过pB还是pD，最终得到的都会是D版本的mf()函数，因为他们指向的本质都是类型为D的对象
+
+这也是这条款的原因，如果重写继承来的non-virtual函数，那么函数的版本不是取决于指向的对象，而是取决于指向对象的指针/引用类型
+
+此外还会违反"is-a"原则
+
+## 条款37：绝不重新定义继承而来的缺省值
+
+条款36已经说明了定义一个non-virtual函数就不该被重新定义，所以该条款的讨论仅限于”继承一个带有default参数值的virtual函数“
+
+所以基于上述论断，该条款的理由是：**virtual函数是动态绑定**（dynamically bound，后期绑定，late binding），**但default参数值却是静态绑定**（statically bound，前期绑定，early binding）
+
+如下代码：
+
+```c++
+class Shape {
+    public:
+    	enum ShapeColor { Red, Green, Blue};
+    	virtual void draw(ShapeColor color = Red) const = 0;
+    ...
+};
+
+class Rectangle: public Shape {
+    public:
+    	// 试图赋予不同的default值，很不好
+    	virtual void draw(ShapeColor color = Green) const;
+    ...
+};
+
+class Circle: public Shape {
+    public:
+    	virtual void draw(ShapeColor color) const;
+    	// 注意这里，如果是使用对象调用时，会发生静态调用
+    	// 而静态调用不会从base继承default参数值，所以一定要指定参数
+    	// 但如果是指针或引用就发生动态调用，可以继承default参数值
+}
+```
+
+至于Rectangle为什么很不好，因为一旦通过`Shape*`指针或引用调用Rectangle的draw函数，会出现神奇的现象：用着Rectangle的函数版本却使用了base类Shape提供的default参数
+
+因为default参数是静态绑定到base上的
+
+为什么呢？因为如果default参数是动态绑定，那么就需要一种方法能在运行期为virtual函数决定使用哪个参数，这样做太过复杂了
+
+这里可以使用NVI手法：
+
+```c++
+class Shape {
+    public:
+    	enum ShapeColor { Red, Green, Blue};
+    	// Shape有自己的non-virtual函数
+    	void draw(ShapeColor color = Red) {doDraw(color)};
+    ...
+    private:
+    	// NVI virtual部分
+    	virtual void doDraw(ShapeColor color) const = 0; 
+};
+
+class Rectange: public Shape {
+    public:
+    	...
+    private:
+    	// 不需要指定参数值
+    	virtual void doDraw(ShapeColor color) const; 
+};
+```
+
+## 条款38：通过复合塑模出has-a或”根据某物实现出“
+
+复合意味着has-a或者"is-implemented-in-terms-of"
+
+当程序中的对象相当于正在抽象的世界中的事物，如人，汽车等，这些属于应用域（application domain）
+
+而其他对象如buffer，mutex，search tree这种人工制品，就属于实现域（implementation domain）
+
+当复合发生在应用域时，表现出has-a关系，当复合发生在实现域时，表现出"is-implemented-in-terms-of"
+
+一个运用复合的例子：比如我们现在想要把原本std::set(使用平衡查找树实现的)用linked list实现，这时我们新定义的Set类可以让std::list的模板成为private成员变量再提供成员函数操作它，这就是复合
+
+## 条款39：明智而审慎地使用private继承
+
+private继承意味着"is-implemented-in-terms-of"。如果让class D以private形式继承class B，那么是为了B内已经存在的某些特性而不是让B和D有任何观念上的交集
+
+private继承纯粹是一种实现技术，不体现出继承关系，在设计上没有意义，意义只在软件实现上
+
+P188举了一个往自定义的class Widget里加Timer，而Timer的ontick()是一个virtual函数需要实现，这时，如果我们使用private继承，固然可以自定义并使用ontick()，但它不应该出现在我们的自定义接口中
+
+如果这里使用复合会更好，如以下方案：
+
+定义一个内嵌类WidgetTimer，它以public继承继承Timer但是却属于Widget的private成员。这个方法有两个好处：
+
+1. 当Widget作为base class被继承时，如果ontick()是通过private继承来的话，它的derived class必须要定义因为ontick()是virtual函数，但通过内嵌类就不会有这个问题
+2. 降低编译依存性。WidgetTimer可以被移出Widget类内（我一开始就这么想的...），然后Widget只用一个指针指向WidgetTimer的对象（声明式），这样Widget就可以不依赖Timer.h
+
+当然如果涉及空间优化，那么可以private继承而非**继承+复合**
+
+C++默认所有**独立（非附属）**对象都需要有非零大小，假设继承一个啥都没有的base类，那么这个继承的部分就是0空间，也就是**空白基类最优化EBO**，当然C++也只在单一继承时遵循EBO，一般无法被施加于继承多个base的derived class上。EBO的是为了不让继承本身增加derived的成本
+
+## 条款40：明智而审慎地使用多重继承
+
+首先比如说多重继承时，两个base class都有同名同参成员函数，这时为了解决这个歧义，我们必须指定调用哪一个base class地函数，如下：
+
+```c++
+mp.BorrowableItem::CheckOut();
+```
+
+包括继承时base每个都会有副本这个问题，虽然可以通过**虚继承**解决，但是有代价：比non-virtual继承的**体积大**
+
+除此之外，因为virtual base的初始化由继承体系中最底层的most derived class负责，因此还有其他的成本：
+
+1. class如果derive from virtual bases而需要初始化，**必须认知**其virtual base，不管离得有多远
+2. 但一个新的derived class进入继承体系，它必须承担其virtual bases的初始化责任
+
+所以建议如下：
+
+1. 非必要不要使用virtual base class
+2. 即使使用了，避免往里面放数据，减少之后的初始化
+
+P197详细讲述了一个多重继承的case，也就是public继承某个interface class + private继承某个协助实现的class
+
+## 条款41：了解隐式接口和编译期多态
+
+比如有如下模板：
+
+```c++
+template<typename T>
+void doProcessing(T& w) {
+    if (w.size() > 10 && w != someNastyWidget) {
+        ...
+    }
+}
+```
+
+1. w必须支持哪一种接口，系由template中执行于w身上的操作来决定。本例中的.size()以及!=等
+2. 凡涉及到**任何函数调用**（本例的.size()以及!=等），有可能造成template实例化，是这些调用得以成功，这样的实例化行为发生在编译期。**由不同的template参数实例化导致调用不同的函数，这就是编译器多态**
+
+隐式接口是什么呢？
+
+就这个例子里面提到了operator!=，但是Widget自身并没有显式定义相应的接口，这些接口可以从base class中来，而且只要能完成转换就行。
+
+比如base提供的size函数是一个short型，但只要他能加上一个int型（本例中为10）并调用operator>和0对比即可。再比如后半段的operator!=，这里也不是非得让等式两边取得一个相同类型，只要能隐式转换即可
+
+这就是template隐式接口，奠基于有效表达式。多态则通过template实例化和函数重载解析在**编译期**实现
+
+## 条款42：了解typename的双重意义
+
+
+
