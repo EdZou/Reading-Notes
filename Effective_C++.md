@@ -9,6 +9,7 @@
 5. pt表示pointer to T类型，rt同理表示reference to T类型
 6. TR1(Technical Report 1)是一份规范，描述了加入C++ STL的诸多新机能，所有组件都被放在命名空间tr1内，并嵌套在std命名空间中
 7.  Boost是一个组织/网站，提供可移植的，有审核的，开源的C++库。大多数TR1机能以Boost的工作为基础
+8. auto_ptr由C++98提出，C++11废弃，unique_ptr功能相似，但更严格一些，面对一些问题会在编译期就报错，详见[知乎文章](https://zhuanlan.zhihu.com/p/63890916)
 
 ## 条款01： 视C++为一个语言联邦
 
@@ -1512,5 +1513,424 @@ void doProcessing(T& w) {
 
 ## 条款42：了解typename的双重意义
 
+template中出现的名称如果依赖于某个template参数，称之为从属名称（dependent names）；如果从属在class内呈嵌套状，则称为嵌套从属名称（nested dependent name）
 
+比如`C::const_iterator iter(container.begin());`，C::const_iterator就是一个嵌套从属类型名称
+
+然而这可能造成parsing困难，如下：
+
+```c++
+template<typename C>
+void print2nd(const C& container) {
+    C::const_container* X;
+}
+```
+
+（C++ primer中也提到了）这么一个表达式，可以理解为定义了一个指针X，也可以理解为C的一个const_container变量与X相乘。C++有规则解析了这一歧义状态：如果解析器在template中遭遇一个嵌套从属名称，它便假设这名称不是个类型，**除非显式声明为类型**，如下
+
+```c++
+typename C::const_iterator iter(container.begin());
+```
+
+在前面加一个typename即可，遵循以下几点：
+
+1. **仅用于验明嵌套从属类型名称**
+
+2. typename不可以出现在base class list（基类列表）之前，也不能在初值列中作为base class的修饰符
+
+## 条款43：学习处理模板化基类内的名称
+
+假设我们有以下template模板：
+
+```c++
+template<typename Company>
+class MsgSender {
+    public:
+    	...
+        void sendClear(const MsgInfo& info)  {...}
+    	void sendSecret(const MsgInfo& info) {...}
+}
+
+// derived class继承模板
+template<typename Company>
+class LoggingMsgSender: public MsgSender<Company> {
+    public:
+    	...
+        void sendClearMsg(const MsgInfo& info) {
+            // 把传送前信息写进log
+            sendClear();
+            // 把传送后的信息写进log
+        }
+}
+```
+
+但这样不会通过编译，编译器会抱怨`sendClear()`函数不存在
+
+为什么呢？假设我们有以下特化版，该CompanyZ版本只允许`sendSecret()`
+
+```c++
+template<>
+class MsgSender<CompanyZ> {
+    public:
+    	...
+    	void sendSecret(const MsgInfo& info) {...}
+}
+```
+
+这时就没有`sendClear()`方法了，这也是为什么编译器会报错，因为编译器清楚base class template有可能被特化，故而**拒绝**在templatized base classes内**寻找继承而来的名称**
+
+而我们有三种办法令”C++不进入templatized base classes这个行为失效“
+
+1. 在base class的函数调用动作前加上"this->"
+
+   ```c++
+   template<typename Company>
+   class LoggingMsgSender: public MsgSender<Company> {
+       public:
+       	...
+           void sendClearMsg(const MsgInfo& info) {
+               // 把传送前信息写进log
+               this->sendClear();
+               // 把传送后的信息写进log
+           }
+   }
+   ```
+
+2. 使用using声明：
+
+   ```c++
+   template<typename Company>
+   class LoggingMsgSender: public MsgSender<Company> {
+       public:
+       	...
+           using MsgSender<Company>::sendClear();
+       	...
+           void sendClearMsg(const MsgInfo& info) {
+               // 把传送前信息写进log
+               sendClear();
+               // 把传送后的信息写进log
+           }
+   }
+   ```
+
+3. 用作用域运算符指出函数位置
+
+   ```c++
+   template<typename Company>
+   class LoggingMsgSender: public MsgSender<Company> {
+       public:
+       	...
+           void sendClearMsg(const MsgInfo& info) {
+               // 把传送前信息写进log
+               MsgSender<Company>::sendClear();
+               // 把传送后的信息写进log
+           }
+   }
+   ```
+
+   这个方法最不好，如果函数是virtual的话，这个方法会关闭”virtual绑定行为“
+
+上述三种做法本质都是：对编译器**承诺** ”base class template的任何特化版本” 都会支持该接口。这种支持一般是编译器在解析derived class template所必需的。但如果最终没有支持，使用时还是会不通过编译
+
+## 条款44：将与参数无关的代码抽离templates
+
+使用template有可能造成代码膨胀（code bloat），有可能源码整齐但obj code却不是那么回事。这时我们使用**共性与变性分析（commonality and variability analysis）**来避免
+
+比如说我们为一个正方matrix写一个template，如下：
+
+```c++
+template<typename T, std::size_t n>
+class SquareMatrix {
+    public:
+    	...
+        void invert();
+}
+// 假设我们这样用这个template
+SquareMatrix<double, 5> sm1;
+sm1.invert();
+SquareMatrix<double, 10> sm1;
+sm2.invert();
+```
+
+上述使用，两个矩阵只有常量不同，其他的都完全一致，这就明显会导致template引出代码膨胀
+
+第一次修改就是把invert函数单独摘出来，成为一个base template让SquareMatrix去继承他
+
+```c++
+template<typename T>
+class SquareMatrixBase {
+    protected:
+    	...
+        void invert(std::size_t matrixSize); // 把size转移到这里
+}
+// SquareMatrix继承base如下
+template<typename T, std::size_t n>
+class SquareMatrix: private SquareMatrixBase<T> {
+    private:
+    	using SquareMatrixBase<T>::invert;
+    public:
+    	...
+        void invert() {this->invert(n);}       // 制造一个inline调用
+}
+```
+
+注意`this->invert`，如果这里不用this，base的invert()就会被derived class隐藏
+
+这里则出现了一个新的问题，base类怎么得到SquareMatrix内部的矩阵数据呢？书中提供了一个往base里加上指针指向矩阵数据的解决方法，也可以通过new把数据放在heap里
+
+但这同样是有代价的：
+
+从一方面看，改进后的绑定size的invert版本可能生成比前一版本更加的代码。例如size是一个编译期常量，因此可藉由常量的广传达到最优化，可以折进被生成指令中成为直接操作数。而前一版本做不到
+
+另一方面看，不同大小的矩阵共享一个版本的invert(前一版本)，可以减少执行文件的大小，进而降低文件work set（在虚拟内存环境下执行的process而言，所在使用的pages），强化指令高速cache中的引用集中化（locality of reference）
+
+以上是效率上需要权衡的
+
+还有就是改进后版本需要一个指针指向数据，这也意味着每个SquareMatrix都多了一个指针的大小，但这往往也难以做到更好了
+
+最后就是这个条款只讨论了**non-type template parameters**带来的膨胀，其实**type parameters**也会带来膨胀，比如有些平台上int和long其实二进制表述一样但`vector<int>, vector<long>`的成员函数也可能完全相同。还有就是所有的指针都是一样的二进制表述，不需要为了指向的对象进行区分导致膨胀
+
+总结：
+
+1. 因**non-type template parameters**带来的膨胀可以通过函数参数（invert参数）或class成员变量消除
+2. 因**type parameters**带来的膨胀也可以降低。往往通过让完全相同二进制表述的实例化类型共享代码
+
+## 条款45：运用成员模板类型接受所有的兼容类型
+
+所谓“智能指针”是“行为像指针”的对象，STL容器的迭代器几乎总是智能指针
+
+但为了支持真实指针所支持的隐式转换的能力，需要程序员自己支持。因为对于template而言，`template<base>`和`template<derived>`之间没有一毛钱的关系
+
+但继承体系中的derived classes随时可能被添加，这样似乎需要无穷无尽的构造函数。这时就需要**member function templates**，如下
+
+```c++
+template<typename T>
+class SmartPtr {
+    public:
+    	template<typename U>                   // member template
+    	SmartPtr(const SmartPtr<U> &other);    // 为了生成copy构造函数
+    	...
+}
+```
+
+以上代码意味着，对任何类型T和任何类型U，这里可以根据`SmartPtr<U>`生成一个`SmartPtr<T>`。这类构造函数根据u创造对象t，而u和v其实是**同一个对象的不同实例**，我们称之为**泛化（generalized）copy构造函数**
+
+但是有时候转换是单向的->我们不希望根据`SmartPtr<Base>`来创建`SmartPtr<Derived>`，也不希望根据`SmartPtr<double>`来创建`SmartPtr<int>`。我们必须对member template创建的函数群进行筛选
+
+这时就假设我们的SmartPtr也能有一个get()方法返回原始指针，这时我们就可以根据原始指针在构造模板中约束，如下
+
+```c++
+template<typename T>
+class SmartPtr {
+    public:
+    	template<typename U>                   // member template
+    	SmartPtr(const SmartPtr<U> &other)
+    		: heldPtr(other.get())
+            { ... };
+    	T* get() const { return heldPtr; }
+    	...
+    private:
+    	T* heldPtr;                            // 该SmartPtr拥有的原始指针
+}
+```
+
+这时，一个`SmartPtr<U>.get()`返回的指针只有能在初值列中转换为T*，才能通过编译，这样就完成了约束
+
+此外，member template function也可以用于赋值操作（P220，unique_ptr，shared_ptr, weak_ptr的相互转换），支持隐式转换则没有explicit修饰。还有就是传递**给shared_ptr的赋值运算符**以及**unique_ptr的copy和赋值运算符**没有const，因为涉及到转移所有权的问题
+
+如果T,U为两个相同类型时，编译器是暗自生成一个copy构造，还是根据另一个同型对象展开构造行为时，将**泛化copy构造函数模板**实例化呢？
+
+答案是前者，会生成普通的copy构造，因为template并不影响语言规则，class内的泛化copy构造函数模板不会阻止编译器自动生成合成copy构造函数，如果想要控制，需要**同时声明泛化copy构造函数模板和正常的copy构造函数**
+
+## 条款46：需要类型转换时请为模板定义非函数成员
+
+（条款24）只有non-member函数才有能力为**所有实参实施隐式类型转换**
+
+如P222的代码：
+
+```c++
+template<typename T>
+class Rational {
+    public:
+    	Rational(const T& numerator = 0,
+                 const T& denominator = 1);
+    	const T numerator() const;
+    	const T denominator() const;
+    	...
+}
+// non-member operator
+template<typename T>
+const Rational<T> operator* (const Rational<T>& lhs,
+                             const Rational<T>& lhs);
+// 使用失败案例
+Rational<int> onehalf(1, 2);
+Rational<int> result = oneHalf * 2; // 错误！
+```
+
+这里的过程是这样的
+
+1. oneHalf被赋予为`Rational<int>`类型
+2. operator*通过oneHalf的类型确认T的类型是`Rational<int>`
+3. 发现2的类型是int而非`Rational<int>`，报错
+
+这是因为**此例的template**在实参推导过程中，**从不将隐式类型转换纳入考虑之中**，这样的转换函数想要被使用，首先要被知道
+
+所以我们可以在template class的friend声明里加上特定函数，这也就意味着operator*可以成为friend函数，进而“知道”转换函数的存在
+
+这里有一个trick，如下：
+
+```c++
+template<typename T>
+class Rational {
+    public:
+    	...
+    friend const Rational operator*(const Rational<T>& lhs,
+                             		const Rational<T>& lhs);
+}
+template<typename T>
+const Rational<T> operator* (const Rational<T>& lhs,
+                             const Rational<T>& lhs) {
+    return Rational(lhs.numerator() * rhs.numerator,
+                    lhs.denominator() * rhs.denominator()));
+}
+```
+
+注意到虽然使用friend，但我们的目的其实不是为了“访问class的non-public成分”
+
+当然，也可以让friend函数都调用**辅助函数**，注意到template class的辅助函数往往也是template，具体实现在P226，比较简单，这里不再赘述
+
+## 条款47：请使用trait classes表现类型信息
+
+C++ primer中提到的5中迭代器分类，这里更进一步给出了专属的卷标结构（tag struct）
+
+```c++
+struct input_iterator_tag {};
+struct output_iterator_tag {};
+struct forward_iterator_tag: public input_iterator_tag {};
+struct bidirectional_iterator_tag: public forward_iterator_tag {};
+struct random_access_iterator_tag: public bidirectional_iterator_tag {};
+```
+
+可以看出其中的is-a关系
+
+如果需要通过是否是random accessible来判断是否用随机访问（advance模板的本质），就需要用traits在**编译期**获得某些类型信息
+
+因为traits是一种**技术**，而不是C++的关键字或构件，它的要求是：对于built-in和user-defined类型必须表现得**一样好**，举个例子，它必须良好运作于不同类型指针和自定义的类上。
+
+因为需要运行于指针上，所以**内置一个trait是不可行的**。标准技术是把它放进一个template及其一个或多个特化版本中。这样的template在std中由若干个，针对迭代器的trait为`iterator_traits`，如下
+
+```c++
+template<typename IterT>
+struct iterator_traits;        // template,用以处理迭代器分类的相关信息
+```
+
+虽然习惯上traits由struct实现，但往往又被称为traits classes
+
+运作方式：针对每一个类型IterT来声明某个typedef名为iterator_category，大概像这样：
+
+```c++
+template<...>
+class deque {
+    public:
+    	class iterator {
+            public:
+            	typedef random_access_iterator_tag iterator_category;
+            	...
+        };
+    ...
+};
+```
+
+其他容器依次类推
+
+这对user-defined行得通，但对指针（也是一种迭代器）行不通，于是有了`iterator_traits`的第二部分，定义一个针对指针的特化版本，如下：
+
+```c++
+template<typename IterT>
+struct iterator_traits<IterT*> {
+    typedef random_access_iterator_tag iterator_category;
+    ...
+}
+```
+
+综上可看出如何设计一个traits class
+
+1. 确认所有的可取得的类型信息，如五种迭代器类型
+2. 为该信息选一个名称，如`iterator_category`
+3. 提供一个template和一组特化版本
+
+最后对于advance的实现，根据if语句判断迭代器类型是在运行期，可以使用重载在编译期判断使用哪种迭代器递增方式
+
+## 条款48：认识template元编程
+
+Template metaprogramming(TMP，模板元编程)是编写template-based C++程序并执行于编译期的过程。
+
+TMP的一大优势就是把一些工作从运行期搬到编译期，上个条款中trait的最终重载解法就是TMP。在上条advance实现中，使用if-else的实现版本时，编译器必须确保**所有源码都总是有效，即使这段源码不可能通过if的判断！**但如果是TMP，编译器从最开始就**只会针对被重载的特定的函数版本**
+
+TMP所有的循环效果藉由递归来实现，也就是**函数式语言的特性**
+
+比如factorial（阶乘函数），只有`factorial<0>`是特化，剩下的往`factorial<n-1>`递归就可以了
+
+TMP所能达成的目标：
+
+1. 确保度量单位正确（用于早期的错误侦测）
+2. 优化矩阵运算。比如对于`m =m1*m2*m3*m4`这样的连续矩阵乘法，正常运算会产生3个临时矩阵，最后再和m4相乘，但如果使用TMP，就无需使用这么多内存且效率有提升
+3. 生成客户定制的设计模式（custom design pattern）。如Strategy，Observer，Visitor等
+
+## 条款49：了解new-delete的行为
+
+当operator new抛出异常以反映一个未获满足的内存需求之前，他会**先**调用一个**客户指定的错误处理函数**，也就是所谓的new-handler。为了指定这个函数，客户必须调用`set_new_handler`（声明于`<new>`中的一个标准程序函数），std中如下：
+
+```c++
+namespace std {
+    typedef void (*new_handler)();
+    new_handler set_new_handler(new_handler p) throw();
+}
+```
+
+new_handler是一个指针，指向没有参数返回void的函数
+
+throw()是一份空白的一场明细，必定是nothrow(详见条款29)
+
+set_new_handler的参数式new_handler类型，一个**指向无法分配内存时该调用的函数的指针**，返回值同样是一个指针，指向**将要被替换**的new_handler类型指针
+
+当operator new不能满足内存申请时，他会不断地调用new-handler函数，直到找到足够内存（反复调用的代码见条款51）
+
+一个设计良好的new-handler需要做到以下事情：
+
+1. 让更多内存可被调用。比如程序一开始分配一大块内存，先不全给，new-handler被调用后再给
+2. 安装另一个new-handler。衍生出一种做法是通过修改诸如static，namespace和global数据来改变new-handler自身的行为
+3. 卸除new-handler。传nullptr
+4. 抛出bad_alloc。这样异常不会被new捕捉而是传到源码new的地方
+5. 不返回。调用abort()或exit
+
+
+
+可以通过每个class提供自己的set_new_handler和operator new来实现不同class的不同处理，如下：
+
+```c++
+class Widget {
+    public:
+    	static std::new_handler set_new_handler(std::new_handler p) throw();
+    	static void* operator new(std::size_t size) throw(std::bad_alloc);
+    private:
+    	static std::new_handler curHandler;
+}
+```
+
+static必须在类外被定义（除非是const还是整型，见条款2），标准版set_new_handler的同作用实现如下：
+
+```c++
+std::new_handler Widget::set_new_handler(std:new_handler p) throw() {
+    std::new_handler oldHandler = curHandler;
+    curHandler = p;
+    return oldHandler;
+}
+```
+
+然后operator new做以下事情：
+
+1. 调用标准的set_new_handler，告知Widget的错误处理函数。这会让Widget定义的new-hanlder安装为global
+2. 调用global的operator new，执行内存分配。如果分配失败，调用Widget的new-handler。如果global的operator new无法分配足够内存，抛出bad_alloc。**在此情况下**，Widget的operator new必须恢复原本的global new-handler，再传播异常
+3. 分配成功返回指针，Widget**析构函数**会管理global new-handler，**自动将调用前的global new-hanlder**恢复回来
 
