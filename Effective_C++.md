@@ -1932,5 +1932,117 @@ std::new_handler Widget::set_new_handler(std:new_handler p) throw() {
 
 1. 调用标准的set_new_handler，告知Widget的错误处理函数。这会让Widget定义的new-hanlder安装为global
 2. 调用global的operator new，执行内存分配。如果分配失败，调用Widget的new-handler。如果global的operator new无法分配足够内存，抛出bad_alloc。**在此情况下**，Widget的operator new必须恢复原本的global new-handler，再传播异常
-3. 分配成功返回指针，Widget**析构函数**会管理global new-handler，**自动将调用前的global new-hanlder**恢复回来
+3. 分配成功返回指针，Widget**析构函数**会管理global new-handler，**自动将调用前的global new-handler**恢复回来
 
+但注意到上述的new-handler都是会改变global版本，有一种方法可以提供**class专属的new-handler**，如下：
+
+```c++
+template<typename T>
+void* NewHandlerSupport<T>::operator new(std::size_t size) throw(bad_alloc) {
+    NewHandlerHolder h(std::set_new_handler(curHandler));
+    return ::operator new(size);
+}
+// class继承support函数获得专属的new-handler定义方法
+class Widget: public NewHandlerSupport<Widget> {
+    ...
+}
+```
+
+注意这里NewHandlerSupport template的T从未被使用，T只作为区分不同derived classes存在，Template机制会自动为每一个T生成一份curHandler，这样同属一个类的所有对象共有一个new-handler
+
+最后注意使用nothrow new只能保证operator new不抛异常，不保证像`new (std::nothrow) Widget`这样的语句不抛异常（new不抛，Widget的构造函数也可能会）
+
+## 条款50：了解new和delete的合理替换时机
+
+替换new和delete的三个常见理由
+
+1. 检测运行上的错误。比如delete失败会产生内存泄漏，多次delete会使行为未定义。这时我们可以让自己的operator new分配额外的空间，然后在额外的空间里防止特定的byte pattern(签名，标识符)，之后如果byte pattern被overrun（写入分配区之后）或underrun（分配区块之前），operator delete就可以根据byte pattern来log事实及相应指针
+2. 强化效能。比如根据不同的需求：小块内存，大块内存，混合大小内存分配进行性能优化
+3. 为了收集使用上的数据。可以收集到内存使用的数据，做出分析，比如是FIFO还是LIFO？不同阶段的分配和归还次序有不同吗？
+
+P249提供了一个实现，但是没有给alignment（机器上要求4 bytes或8 bytes对齐），通过alignment(对齐)可以提高访问效率
+
+其他理由补充：
+
+4. 增加分配和归还的速度。比如Boost的pool，专门针对大量小型对象的分配
+5. 为了降低默认内存管理器带来的空间额外开销。泛用的内存管理器往往慢还使用更多内存，有额外开销，Boost的poo针对小型内存减少开销
+6. 弥补默认内存分配器中的非最佳齐位（suboptimal alignment）。比如x86体系结构上doubles的访问最为快速（在8-byte齐位的前提下）
+7. 使相关对象成簇集中。当我们直到某个数据结构往往被一起使用，又希望将page faults降至最低，那么可以为该数据结构另创建一个heap，是的它们被**成簇集中**在尽可能少的pages上（条款52的placement）
+8. 为了获得非传统行为。比如通过C API补充分配和归还**共享内存**的区块
+
+## 条款51：编写new和delete时需固守常规
+
+P242一个new需要的要素：
+
+1. 分配成功时返回指针
+2. 内存不足时无限循环调用new-handler
+3. 必须对应**零内存**需求
+
+如果operator new是base class专属的，我们可以在operator new中加上以下部分：
+
+```c++
+void* Base::operator new(std::size_t size) throw(std::bad_alloc) {
+    if (size != sizeof(Base)) return ::operator new(size);
+}
+```
+
+注意，这里同时也处理了零内存需求：因为`sizeof(Base)`不可能是0，所以当size为0时会交付给标准的operator new处理
+
+对于operator new[]，注意一定需要一个size_t参数，但真实分配的一定比size_t要大（我们需要一额外空间存放元素个数，条款16）
+
+对于delete，注意C++保证**删除null指针永远安全**，而上面提到了大小不符合base的new操作会被转交给标准new，delete也做一样的事
+
+注意如果即将被删除的对象是一个derived class，且base class欠缺virtual析构，那么size_t的数值可能不准去（所以base classes最好拥有一个virtual析构函数）
+
+## 条款52：写了placement new也要写placement delete
+
+如果operator new接受了除了必须有的size_t以外的参数，那么这就是所谓的placement new。有一个placement new版本十分有用，如下：
+
+```c++
+void* operator new(std::size_t, void* pMemory) throw();
+```
+
+pMemory指向**对象被构造之处**，该函数可通过`#include <new>`取用。其用途之一是负责在vector的未使用空间上创建对象，同时也是最早的placement new版本。
+
+当执行如下操作时：
+
+```c++
+...
+    static void* operator new(std::size_t, std::ostream& logStream)
+    	throw(bad_alloc);
+...
+
+// 使用上述的operator new
+Widget* pw = new (std::cerr) Widget;
+```
+
+因为先执行new后执行Widget构造，如果先分配成功，而Widget构造抛出异常，那么运行期系统需要释放分配的内存并恢复之前的状态。但运行期系统不请楚new的内部如何运作，只能通过查找**参数个数和类型都与operator new相同**的某个delete版本，本例中，operator delete版本是：
+
+```c++
+void operator delete(void*, std::ostream) throw();
+```
+
+如果没有参数匹配的delete版本，那么**没有任何operator delete会被调用**，造成内存泄漏
+
+但placement delete**只有在伴随placement new调用而触发的构造函数**出现异常时才会被调用，如果使用`delete pw;`，placement delete并不会被调用，只会使用正常形式的operator delete
+
+注意自定义的new和delete会把从base继承而来的和std里global版本的**全部隐藏**，想要同时保有的话：
+
+1. 对于global版本（P260），建立一个base class，内含所有正常的new和delete
+2. 利用继承机制和using声明把base的版本都可见
+
+## 条款53：不要轻易忽视编译器的警告
+
+（著名表情包：warning警告牌只有程序员开下山）
+
+## 条款54：让自己熟悉包括TR1在内的标准程序库
+
+这里有些报菜名的意思，大体都在C++ primer提到过了，这里不多赘述
+
+## 条款55：让自己熟悉Boost
+
+总的来说就是C++程序员的github社区
+
+
+
+终于看完了，内容多干货多，这么快看完只怕是记不住，回头还要来复习#捂脸
