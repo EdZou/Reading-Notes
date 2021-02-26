@@ -343,3 +343,369 @@ TD<decltype(y)> yType;
 
 ## 条款5：优先选用auto，而非显式型别声明
 
+这里先提到了`std::function`，老生常谈的部分就不提了
+
+这里先给出`std::function`和auto的两种定义示例再讨论其不同：
+
+```c++
+std::function<bool(const std::unique_ptr<Widget>&,
+                   const std::unique_ptr<Widget>&)> // std::function来存储闭包
+    derefUPLess = [](const std::unique_ptr<Widget>& p1,
+                     const std::unique_ptr<Widget>& p2)
+					{ return *p1 < *p2; }
+auto derefUPLess = [](const std::unique_ptr<Widget>& p1, // auto来存储闭包
+                     const std::unique_ptr<Widget>& p2)
+					{ return *p1 < *p2; }
+```
+
+auto的和闭包是**同一型别**，要求的内存量也和闭包一致；`std::function`版本存储的是一个`std::function`的**一个实例**，不管给定的闭包的尺寸，**实例的大小都是固定的**。如果实例空间不够大，那么`std::function`的构造函数就会**分配heap上的内存**来存储该闭包。所以`std::function`几乎一定会比auto声明的闭包**使用更多内存**
+
+此外，因为编译器对于`std::function`的实现细节往往**限制内联，并且产生间接函数调用**，这也导致`std::function`声明的闭包几乎一定会比auto声明的同一闭包要**慢**
+
+所以auto大获全胜，**尽量用auto声明闭包**
+
+还有就是auto可以避免因为系统不同，比如（`std::vector<int>::size_type`在32-bit Windows为32位但在64-bit Windows上为64位），可以通过auto来规避风险
+
+还有就是在如下循环中：
+
+```c++
+for (const std::pair<std::string, int>& p: map) {...}
+```
+
+因为map的key是const型，这里应该是`std::pair<const std::string, int>`，编译器会想办法把原本的元素转换为指定的显式的类型（通过copy），然后效率爆炸
+
+所以**显式指定型别**可能导致你既不想要，也没想到的**隐式型别转换**，还是使用auto省事，如下：
+
+```c++
+for (const auto& p: map) {...}
+```
+
+## 条款6：当auto推导的型别不符合要求时，使用带显式型别的初始化物习惯用法
+
+比如对于`std::vector<bool>`来说，它的operator[]返回的并不是元素的引用（除了bool以外都是），而是一个`std::vector<bool>::reference`型别的对象（嵌套在`std::vector<bool>`里的类），所以这里如果使用auto，会推导出一个`std::vector<bool>::reference`的型别
+
+之所以会有`std::vector<bool>::reference`，是因为`std::vector<bool>`做了优化，把bool压缩成bit(bitmap的思想)，于是就内嵌了一个`std::vector<bool>::reference`类，并允许其向bool型别**隐式转换**
+
+所以如果我们做如下操作：
+
+```c++
+std::vector<bool> features(const Widget& w);
+
+// 行为undefined
+auto highPriority = features(w)[5];
+```
+
+过程如下：
+
+前提：`std::vector<bool>::reference`会让对象含有一个指针，指向一个**机器字（word）**，该机器字持有被引用的bit并基于那个bit对应字的offset。
+
+1. features返回一个`std::vector<bool>`的临时对象temp
+2. temp调用operator[]返回一个`std::vector<bool>::reference`对象，含有指针和offset
+3. 由于highPriority是`std::vector<bool>::reference`对象的一个副本，所以highPriority也会有一个指向机器字的指针以及offset
+4. 表达式结束时temp作为临时量被析构，而highPriority则含有一个空悬指针
+5. 行为undefined
+
+本例中`std::vector<bool>::reference`是一个**隐形代理类**，显式代理类比如`std::unique_ptr`这类的智能指针没有问题，但auto不可和本例中的隐形代理类混用，不能做如下操作：
+
+```c++
+auto someVar = "隐形"代理类别表达式;
+```
+
+使用隐形代理类的库往往会在**文档里和头文件签名**中写明，以此避免
+
+但也不必就此放弃auto，大可以利用`static_cast`来解决(标题中带显式型别的初始化物习惯)，如下：
+
+```c++
+auto hightPriority = static_cast<bool>(features(w)[5]);
+```
+
+## 条款7：在创建对象时区分()和{}
+
+大括号内在是**统一初始化**，在以下三个情景中：
+
+1. 大括号指定容器的初始内容：
+
+   ```c++
+   std::vector<int> v{1,3,5};
+   ```
+
+2. 为非静态成员指定**默认初始化值**，这个也可以使用=，但不能使用()
+
+   ```c++
+   class Widget {
+       ...
+       private:
+       	int x{0};      // x默认值为0
+       	int y = 0;	   // y默认值为0
+       	int z(0);	   // 失败
+   }
+   ```
+
+3. uncopyable对象（比如`std::atomic`对象）可以采用大小括号初始化，但是不能使用=
+
+   ```c++
+   std::atomic<int> ai1{0};   // 可行
+   std::atomic<int> ai2(0);   // 可行
+   std::atomic<int> ai3 = 0;  // 失败
+   ```
+
+这就是为什么{}叫“统一初始化”，因为只有大括号能适用以上所有场合
+
+大括号有个特性，禁止built-in型别之间进行**隐式窄化型别转换（narrowing conversion）**，比如下面代码：
+
+```c++
+double x,y,z;
+...
+int sum1{x+y+z}; // 错误！double的和可能不能用int表达    
+int sum2(x+y+z); // 没问题，double被截断
+int sum3 = x+y+z;// 同上
+```
+
+大括号还能避免**最令人痛苦的解析语法**：任何能解析为声明的都**优先**解析为声明，如下：
+
+``` c++
+Widget w1(10); // 传参10，调用构造函数
+// 当试图没参数的Widget构造函数时
+Widget w2();   // 编译器解析认为这是在 “声明”函数而非调用
+Widget w3{};   // 成功调用无形参的构造函数
+```
+
+那么接下来就是缺点：
+
+1. 前面也提到了，auto会把{}推导为`std::initializer_list`
+2. 如果有一个或多个构造函数声明了具备`std::initializer_list`型别的形参，那么使用{}的初始化语法会**强烈的优先**选择这些构造函数
+
+比如下面情况：
+
+```c++
+class Widget {
+    public:
+    	Widget(int i, bool b);
+    	Widget(int i, double d);
+    	Widget(std::initializer_list<bool> il); // 实际调用的版本
+    ...
+}
+
+Widget w{10, 5.0}; // 报错：{}不允许窄化转换
+```
+
+只有在找不到任何办法让将实参转化为`std::initializer_list`模板中的型别时，编译器才会退而求其次，检查不同的重载版本
+
+比如上述版本，如果`std::initializer_list<bool>`换成`std::initializer_list<std::string>`时，因为10和5.0无法转换为string，编译器才回去选择其他重载版本的构造函数
+
+但有个特例，那就是使用空{}，这时有两种理解：1. 没有实参，执行默认构造函数；2. 理解为空`std::initializer_list`，执行对应的构造函数。但这种情况下，会认为是没有实参，执行第一种默认构造函数
+
+如果是希望使用空`std::initializer_list`的构造函数，可以用以下写法：
+
+```c++
+Widget w4({});
+```
+
+所以作为类的设计者，必须认知到`std::initializer_list`的特性，并且注意最好把函数设计成无论使用者使用大括号还是小括号都不会影响的版本。同时创建对象时也要三思后行
+
+## 条款8：优先选用nullptr，而非0或NULL
+
+C++的基本观点还是0是int，如果在使用指针的语境中出现了一个0，也会勉强把他解释为空指针而已；NULL类似，只不过是赋予非int类型的0值。总之这俩都**不具备指针型别**
+
+C++98中，以上关键点可能对int和ptr型别重载的时候有影响
+
+nullptr的优势就在于它**没有整型型别**，准确来说也不具备指针型别，但可以把它想象成任意type指针。其实际type是`std::nullptr_t`，可以隐式转换到所有的裸指针type
+
+P63给出了一个template根据0，NULL，nullptr推导类型不同的例子
+
+## 条款9：优先选用别名声明，而非typedef
+
+理由其一，好理解，如下两写法其实功能一样，但using明显更好理解
+
+```c++
+typedef void(*FP)(int, const std::string&);
+using FP = void(*)(int, const std::string&);
+```
+
+压倒性的理由其二，using支持template，typedef不行（需要嵌套在struct中硬来），如下：
+
+```c++
+// 使用using
+template<typename T>
+using MyAllocList = std::list<T, MyAlloc<T>>;
+
+MyAllocList<Widget> lw;
+
+// 使用typedef，几乎需要从头做一遍
+template<typename T>
+struct MyAllocList {
+    typedef std::list<T, MyAlloc<T>> type;
+};
+
+MyAllocList<Widget>::type lw;
+```
+
+此外，在模板内使用typedef创建一个模板对象，且模板参数是由模板形参决定时，需要给typedef的名字加上一个typename前缀，如下
+
+```c++
+template<typename T>
+class Widget {
+    private:
+    	typename MyAllocList<T>::type list;
+    	...
+}
+```
+
+但如果是using，那么写typename的要求就消失了
+
+```c++
+template<typename T>
+class Widget {
+    private:
+    	MyAllocList<T> list;
+    	...
+}
+```
+
+原因很简单，因为using是一个别名模板，必然是一个type，是一个**非依赖性型别**；但对于`MyAllocList<T>::type`而言，编译器**不确定**它是否是一个型别，有可能在某个特化版本中就不是，所以必须要在前面加一个typename
+
+但C++11的一些std函数，如：
+
+```c++
+std::remove_const<T>::type;
+```
+
+也是使用在struct中内嵌typedef的手法，所以当我们在template中使用这些函数时，同样也需要在前面加上typename
+
+到了C++14才有了对应的using模板，如下：
+
+```c++
+std::remove_const_t<T>; //与上面的等价
+```
+
+## 条款10：优先选用限定作用域的枚举型别，而非不限作用域的枚举型别
+
+正好这里复习一下enum的scope
+
+```c++
+// 这种写法，Color内部作用域延续到花括号外，整个作用于不可重名
+enum Color { black, white, red}; // 默认{0,1,2}
+// 这种写法限定作用域的enum，作用域只在enum花括号内
+enum class Color {...}; 
+```
+
+上面体现了限定作用域enum的第一个优势：**降低命名空间的污染**
+
+第二个压倒性的理由：枚举量是**强类型的（strongly typed）**。不限作用域enum中的枚举量（枚举成员）可以被隐式转换为int，并可以进一步->float，这样会产生很多问题。而限定作用域的enum不会有任何隐式转换路径（当然，如果非要转换，也可以通过`static_cast`这样的强制转型来）
+
+第三个优点是：限定作用域enum可以进行**前置声明**。不限定版本也可以，但需要额外工作。因为一切enum型别在C++里都会选择int作为底层type，对于Color这样的三个值会选择char作为底层type。而一些取值范围更大的，如下面的enum:
+
+```c++
+enum Status {
+    good = 0,
+    failed = 1,
+    indetermined = 0xFFFFFFFF
+};
+```
+
+为了**节约内存**，编译器通常为enum选一个足够的最小type
+
+这也是为什么限定作用域的enum可以前置声明，因为它的底层类型被使用前就已知（默认int），但不限定enum可以指定。当然，如果默认的int不符合我们目的，也可以如下推翻它：
+
+```c++
+enum class Status;                // 默认底层type为int
+enum class Status: std::uint32_t; // 指定底层type为uint32_t
+```
+
+所以如果不限定作用域的enum加上了指定底层type的部分，就可以前置声明了：
+
+```c++
+enum Color: std::uint32_t;
+```
+
+前置声明的缺失最大的问题就是提升了编译依赖性，一旦改了值全世界都要重新编译。但如果有前置声明，就能完成声明式和定义式的分离（Effective里的）
+
+非限定作用域enum有一个妙用就是和`std::tuple`的域名联动：
+
+```c++
+// 比如我们定义一个tuple的userinfo
+using UserInfo = std::tuple<std::string,  // name
+							std::string,  // email
+							std::size_t>; // reputation
+// 假设用户开始使用
+UserInfo uInfo;
+// 不使用非限制enum时
+auto val = std::get<1>(uInfo);       // 取用域1的值，程序员需要记住域1对应email
+// 使用enum
+enum UserInfoFields { uiName, uiEmail, uiReputation}
+auto val = std::get<uiEmail>(uInfo); // 这样使用省心多了
+```
+
+如果用限定作用域的enum还需要作用域访问符和强制转型，十分繁琐，如果想要调用更简洁，需要一个`std::underlying_type`取得（见P73）
+
+## 条款11：优先选用删除函数，而非private未定义函数
+
+把copy和赋值操作函数声明在private并不去定义他们，意味着该类不支持这些操作，这正是Effective C++里推荐的.....（如果成员函数或友元试图访问这些操作，linker阶段就会失败）
+
+这本书更推荐=delete的写法，发现问题更早
+
+**=delete函数声明在public原因**：因为如果用户试图访问，如果=delete函数是在private里，那么编译器报错会说**因为private禁止访问**，所以声明在public里，编译器会报**函数被删除，这样的报错信息更优秀**
+
+=delete函数的重要优点：**任何函数都能成为=delete函数**，但只有**成员函数**能被声明为private
+
+这样就可以选择性的筛去一些重载版本（P76）
+
+还有一个妙用是**阻止不应进行的模板具现**，private声明写法做不到：
+
+```c++
+template<typename T>
+void processPointer(T* ptr);
+
+// 我们不希望有void*进而char*,使用=delete
+template<>
+void processPointer<void>(void*) = delete;
+template<>
+void processPointer<char>(char*) = delete;
+```
+
+private做不到的原因：不可能给予成员函数模板的某个特化以主模板不同的访问层级（模板特化必须在namespace里而非类作用域里）
+
+当float被隐式转换到double或int时，优先选择double
+
+## 条款12：为意在改写的函数添加override声明
+
+override发生的条件：
+
+1. 基类中的函数必须virtual
+2. base和derived函数名必须完全相同（析构除外）
+3. base和derived形参的类型和数量完全相同
+4. base和derived函数常量性完全相同
+5. base和derived返回值和异常规格必须兼容
+6. C++11里新提出：引用修饰词（规定函数只能用于左值/右值）完全相同
+
+这就是为什么需要override，这个关键字会提醒编译器细细的把以上的条件都check一遍，如果不加override，编译器只会认为derived定义了自己的函数，和base中的virtual函数无关
+
+而且添加override之后，可以改掉基类虚函数的签名，然后就能看到有多少derived受到了影响，原本override函数无法编译
+
+位置在函数最末尾：`virtual void mf3() && override`
+
+&左值，&&右值。在类内表示这个类的对象(*this)为左值时调用该函数；这个类的对象为右值时调用
+
+## 条款13：优先选用const_iterator，而非iterator
+
+C++98太难用了：
+
+1. 没有从iter->const_iter的便捷途径
+2. 而且insert/erase的位置只能由iterator指定，不接受const_iterator
+
+C++11都改掉了。C++提供了non-member版本的`begin,end`，但诸如`cbegin,cend,rbegin,rend,crbegin,crend`这些都只有member版本函数
+
+当然，可以自己支持这点，如：
+
+```c++
+template <class C>
+auto cbegin(const C& container) -> decltype(std::begin(container))
+{
+    return std::begin(container);
+}
+```
+
+通过`const C& container`为iterator加上了常量性，其他的对应函数也能依次类推
+
+## 条款14：只要函数不会发出异常，就为其加上noexcept声明
+
