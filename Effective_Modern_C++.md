@@ -709,3 +709,291 @@ auto cbegin(const C& container) -> decltype(std::begin(container))
 
 ## 条款14：只要函数不会发出异常，就为其加上noexcept声明
 
+理由：
+
+1. 事关接口设计。调用方可以查询函数的noexcept状态，和成员函数是否带有const是**同等重要**的，当明知一个函数不会throw异常却不加noexcept是**接口规格缺陷**
+
+2. 生成更好的目标代码。可以从考察C++98和C++11的版本差异开始：
+
+   ```c++
+   int f(int x) throw();   // C++98
+   int f(int x) noexcept;  // C++11
+   ```
+   
+   以上两种都是不发异常，但在C++98的异常规格下，调用stack会开解至f的调用方，在执行一些无关操作后程序终止；在C++11异常规格下，程序终止前，stack只是**可能开解**
+   
+   但开解调用栈和可能开解调用栈对**优化**的影响很大：对noexcept版本而言，优化器不需要在异常传出函数的前提下，将执行期stack**保持在可开解状态**；也不需要在异常逸出函数的前提下，保证对象以构造顺序的逆序完成析构（说白了就是一些异常需要考虑的问题，优化器都不用考虑了，比如异常传出函数，异常逸出函数等情况不再考虑）
+
+一个应用就是如C++ push_back中，即使使用移动操作也不会有异常，这里就可以用noexcept来延续copy操作引入的强异常安全保证（见P91底部的过程，取决于移动构造函数是否noexcept）
+
+但有意思的是，std中的swap是否带有noexcept声明，取决于用户定义的swap是否带有noexcept声明，例如std为std::pair准备的swap函数：
+
+```c++
+template <class T, size_t N>
+void swap(T (&a)[N],
+          T (&b)[N]) noexcept(noexcept(swap(*a, *b)));
+
+template <class T1, class T2>
+struct pair {
+    void swap(pair& p) noexcept(noexcept(swap(first, p.first)) && 
+                                noexcept(swap(second, p.second)));
+    ...
+}
+```
+
+noexcept表达式的声明，他们是否具备noexcept性质取决于内部的表达式结果是否为noexcept(有点逻辑与的意思)
+
+事实上大多是函数都是异常中立（exception-neutral）的，即自身不throw异常但调用的函数会throw，这些函数都**不是noexcept**的
+
+注意不要强行把会抛出except的函数做noexcept实现，很愚蠢
+
+C++11中把operator delete/delete[]以及所有析构函数都隐式地声明为noexcept（标准库里都是）
+
+即使noexcept函数内部调用了没有noexcept保证的函数，编译器也不会warning，因为有可能是C-style或C++98的等地方移植来的代码
+
+## 条款15：只要有可能使用constexpr，就使用它
+
+有constexpr的函数，即不能断定是const函数，也不能假定其值在编译期就已知（传入的参数是**编译期常量**，就产出编译期常量，传入的参数含有运行期值就和普通函数一样产出运行期值）
+
+所有的constexpr对象都是const对象，且编译期已知，在只读内存中创建
+
+C++11中constexpr函数**不能包含多于一个执行语句**，也就是return，C++14放宽了
+
+C++14中constexpr唯一的限制就是只允许传入和返回字面类型（built-in类型和constexpr的自定义type，见P98自定义constexpr构造函数）
+
+通常constexpr函数里不允许有I/O语句，只要可能就使用constexpr，这宣告的是“但凡C++要求使用一个常量表达式的语境都可以用我”
+
+## 条款16：保证const对象的线程安全性
+
+这个条款的原理我个人比较熟悉了，就是mutex和原子操作那一套，这里只把C++里的一些示例做一下笔记
+
+如果成员函数是const而成员变量有mutable，编译器不会对多线程报警，即使是const成员函数也会有race condition
+
+mutex用法示例（类内）：
+
+```c++
+public:
+	RootsType roots() const {
+        std::lock_guard<std::mutex> g(m); // 锁住mutex
+		if (...) {...}
+    	return ...;
+    }
+private:
+	mutable std::mutex m;
+	...
+```
+
+注意C++里不需要显式的解锁，但该例中一定要是mutable因为如果不是这个m会被认为const进而无法在roots()函数内改变
+
+`std::mutex`和`std::atomic`都是**只移型别（move-only type）**，作为类的成员变量定义会使类失去可复制性，但保留可移动性
+
+## 条款17： 理解特种成员函数的生成机制
+
+特种函数就是C++会自动生成的函数（C++ primer里的合成函数），包括默认构造，析构，复制构造和复制运算符
+
+只有一个类没有声明任何构造函数时，编译器才会自动生成（被需要时才生成），且特种函数都是public，inline的，除了析构以外都是non-virtual函数。当base为virtual析构函数，编译器为他的derived class生成析构函数时，生成的是virtual析构
+
+C++11中移动构造/赋值也加入了特种函数，移动操作在不支持移动的对象上本质是复制
+
+两种复制操作是**独立的**（声明一个不会影响编译器生成另一个）；但两个移动操作**不是相互独立的**（声明了一个，会阻止编译器生成另一个）。
+
+这个地方编译器的考虑是：既然生成了用户自己的移动操作函数，那意味着用户版本和编译器生成的版本有差距，所以编译器会不再特意为用户生成了。更进一步推到**一旦显式声明了复制操作**，编译器也不会再为用户生成移动操作了，理由和上述类似
+
+反过来也一样，一旦自定义了移动操作，编译器也会拒绝合成移动操作（定义为=delete）
+
+指导原则**大三律（Rule of Three）**：
+
+​	如果声明了复制构造，复制赋值，析构函数中的任意一个，就得同时声明所有3个。因为如果有改写	复制的操作，意味着类需要执行某种资源管理，这也意味着：
+
+1. 一种复制操作中用到的资源管理，另一种复制操作也需要
+2. 析构函数通常也会参与到资源管理中来
+
+这也意味着，如果用户定义了自己的析构函数，编译器也不会为其生成复制操作（理论上，C++11并没这么做，因为C++98没这么做，怕破坏老代码）。但C++11会禁止生成移动操作
+
+如果非要用编译器自动生成，可以显式的用=default，这种手法对于多态基类很有用
+
+如果是**复制/移动操作函数模板**，**不会**影响编译器生成特种函数
+
+## 条款18：使用std::unique_ptr管理所有具备所有权的资源
+
+`std::unique_ptr`默认和裸指针有着相同的尺寸，甚至大多数操作都是一个指令。这意味着甚至可以在内存和时钟紧张的情况下使用
+
+`std::unique_ptr`是一个只移型别，默认的资源析构是通过对`std::unique_ptr`内部的裸指针实施delete完成的；当所有权链异常时，`std::unique_ptr`会调用该资源的析构函数（违反noexcept异常规格或调用`std::abort`局部对象不会析构）
+
+`std::unique_ptr`可以使用custom deleter，调用时可以使用lambda或函数对象，当使用自定义的deleter时，尺寸一般会增加一到两个字长（word）。
+
+当析构器是函数对象，尺寸的变化取决于函数对象存储了多少状态，无状态的函数对象（如无捕获列表的lambda）不浪费额外的尺寸，这也意味着deleter可以用函数也可以用无捕获的lambda实现时，无捕获的lambda更理想
+
+`std::unique_ptr`有两种形式：`std::unique_ptr<T>`单个对象以及`std::unique_ptr<T[]>`数组避免二义性。API也被设计成与使用形式相配：单个对象不提供operator[]；数组不提供operator*和operator->（拒绝隐式数组->裸指针转换）
+
+`std::unique_ptr`还可以高效的隐式转换为`std::shared_ptr`，这也是它适合作为工厂函数返回值的原因之一
+
+## 条款19：使用std::shared_ptr管理具备共享所有权的资源
+
+引用计数的存在会带来性能影响：
+
+1. `std::shared_ptr`的尺寸是裸指针的两倍。一个裸指针指向资源，一个指向引用计数
+2. 引用计数的内存**必须动态分配**。条款21解释如果用`std::make_shared`创建可以避免动态分配的成本
+3. 引用计数的递增和递减必须是原子操作。
+
+和unique_ptr类似，`std::shared_ptr`也可以自定义deleter。但对于`std::unique_ptr`而言，deleter是智能指针型别的一部分；对于`std::shared_ptr`则不是。`std::shared_ptr`更有弹性，假设有俩`std::shared_ptr`如下：
+
+```c++
+auto customDeleter1 = [](Widget *pw) {...}  
+auto customDeleter2 = [](Widget *pw) {...}  // 两deleter不同type
+
+std::shared_ptr<Widget> pw1(new Widget, customDeleter1);
+std::shared_ptr<Widget> pw2(new Widget, customDeleter2);
+```
+
+由于pw1和pw2是一种型别，可以被放置到同一个容器中：
+
+```c++
+std::vector<std::shared_ptr<Widget>> vpw{pw1, pw2};
+```
+
+pw1和pw2甚至可相互赋值，也都可以被传递到`std::shared_ptr<Widget>`的形参中。`std::unique_ptr`不行，因为deleter作为一部分**会影响其型别**。所以也能看出，deleter**不会影响**`std::shared_ptr`的尺寸
+
+前面提到的指向引用计数的指针，实质上引用计数是**控制块这个更大数据结构的一部分**，控制块除了包含引用计数以外，还可能包含自定义deleter的一个复制以及`std::weak_ptr`（P123图）
+
+控制块的创建遵循以下规则（总的来说就是第一个`std::shared_ptr`对象负责创建控制块）：
+
+1. `std::make_shared`总是创建一个控制块
+2. 从**具备专属所有权的智能指针**如`std::unique_ptr,std::auto_ptr`创建一个`std::shared_ptr`时也会创建一个控制块
+3. `std::shared_ptr`的构造函数使用**裸指针作为实参**时
+
+第三点意味着，如果**一个裸指针创建了多次`std::shared_ptr`**对象，那么就会有**多个控制块**，引用计数完全分开，且析构时被多次析构！！！
+
+有关裸指针的两个教训：
+
+1. 避免将裸指针传给`std::shared_ptr`的构造函数，可以使用`std::make_shared`（如果自定义deleter就用不了了）
+2. 如果非要传裸指针，就直接用new返回的结果，之后可以用得到的`std::shared_ptr`去初始化其他的
+
+P126详细介绍了如果想要把类本身加入到`std::vector<std::shared_ptr<Widget>>`这样的容器中时，可以让类继承`std::enable_shared_from_this`，再通过调用其成员函数`shared_from_this`来获得一个**不重复创建控制块**的`std::shared_ptr`
+
+之前说了`std::unique_ptr`可以方便的转化为`std::shared_ptr`。但反过来不行，`std::shared_ptr`和其指向的资源是**至死方休**的
+
+注意`std::shared_ptr`不能处理数组，不像unique有`std::unique_ptr<T[]>`，`std::shared_ptr`不支持operator[]，deleter也要自己提供。如果`std::shared_ptr`指向数组，那是一种很拙劣的设计
+
+## 条款20：对于类似std::shared_ptr但有可能空悬的指针选择std::weak_ptr
+
+`std::weak_ptr`和`std::shared_ptr`一样方便但不参与管理所有权
+
+`std::weak_ptr`并不是独立的智能指针，而是`std::shared_ptr`的一种扩充。一般`std::weak_ptr`会通过`std::shared_ptr`来创建
+
+expire()函数可以验证指针是否空悬，但是有race condition，比如最后一个`std::shared_ptr`正在析构，还未减少计数，然后expire()判定失败试图使用，使用时才发现是空悬指针，行为undefined
+
+所以需要atomic**操作**
+
+1. `std::weak_ptr::lock`, `wp.lock()`如果不空悬返回任意一个`std::shared_ptr`，如果空悬返回一个nullptr
+
+2. 还可以通过`std::weak_ptr`构造一个`std::shared_ptr`，如下：
+
+   ```c++
+   std::shared_ptr<Widget> spw3(wp);
+   ```
+
+   如果`std::weak_ptr`是空悬指针则失败，抛出异常
+
+`std::weak_ptr`可以用在比如Widget对象都有对应的uuid，然后对象需要有一个缓存管理器管理这些对象，这时可以用到`std::weak_ptr`来校验存储的对象是否被释放（检测空悬的功能），如下：
+
+```c++
+std::shared_ptr<const Widget> fastLoadWidget(WidgetID id) {
+    static std::unordered_map<WidgetID,
+    						  std::weak_ptr<const Widget>> cache;
+    auto objPtr = cache[id].lock();
+    if (!objPtr) {
+        objPtr = loadWeight(id);   // 对象不在缓存里就加载并缓存（缓存未命中）
+        cache[id] = objPtr;
+    }
+    return objPtr;
+}
+```
+
+由于失效的`std::weak_ptr`会不断积累，可以使用**观察者模式**
+
+P132又一`std::weak_ptr`应用的例子：A,B 使用`std::shared_ptr`指向C，当C试图指向A时，用什么指针呢？
+
+1. 裸指针（不行）。如果A被析构，B试图通过C使用A，就会产生undefined行为
+2. `std::shared_ptr`（不行）。环形引用，A,B无法被自动回收，直接内存泄漏
+3. `std::weak_ptr`。以上的问题都没有，也不会影响引用计数
+
+使用`std::weak_ptr`打破`std::shared_ptr`的环形回路**不是**特别常用的做法。如果是树这样等级严格的谱系，子节点一般只被父节点拥有，且父节点被析构子节点也被析构，可以用`std::unique_ptr`从父指向子，子指向父则可以用裸指针
+
+当然在非严格谱系中，以及缓存和观察者列表这样的实现下`std::weak_ptr`还是不错的
+
+`std::weak_ptr`也和`std::shared_ptr`一个尺寸，也指向控制块，只不过指向的是**第二个引用计数，弱计数**
+
+## 条款21：优先选用std::make_unique和std::make_shared，而非直接使用new
+
+C++14才有的`std::make_unique`，但基础版本实现并不难，见P133
+
+第三个make函数是`std::allocate_unique`，使用allocator作为对象，这里不是重点
+
+第一个优点，避免冗余：
+
+```c++
+auto upw1(std::make_unique<Widget>());
+std::unique_ptr<Widget> upw2(new Widget); // 不用make会把类型写两次
+```
+
+第二个优点，异常安全：
+
+如果对以下函数传值：
+
+```c++
+void processWidget(std::shared_ptr<Widget> spw, int priority);
+// 使用new传值，内存泄漏
+processWidget(std::shared_ptr<widget>(new Widget), priority());
+```
+
+和Effective C++上的案例一样，C++和Java，C#这样的语言不同，在执行的顺序上是未知的，如果：
+
+1. new生成一个Widget对象
+2. 执行priority()函数
+3. 最后把Widget对象构造成`std::shared_ptr`
+
+有可能在第二步抛出异常导致第一步的new对象无法被释放，就内存泄露了
+
+`std::make_shared`就没有以上问题
+
+还有就是`std::make_shared`更快，比如
+
+```c++
+std::shared_ptr<widget>(new Widget)
+```
+
+这个语句实质上涉及了两次内存分配（new的一次和关联控制块的一次分开），`std::make_shared`就一次
+
+但make也有缺点：
+
+1. 所有的make都不支持自定义deleter
+2. 不能完美转发**大括号初始物**
+
+还有就是在自定义operator new和operator delete时，精准分配处理一个`sizeof(Widget)`大小时，不适合使用make（使用更多空间）
+
+控制块在对应的`std::make_shared`产生的最后一个`std::shared_ptr`（引用计数）和最后一个指向它的`std::weak_ptr`（弱引用）被析构之前都无法释放。
+
+这意味着如果最后一个`std::shared_ptr`被析构和最后一个`std::weak_ptr`被析构中间的延迟，可能会造成资源的占用。如果使用make，那么`std::shared_ptr`**指向的对象也和控制块是一个生存周期**
+
+但如果是new表达式产生的`std::shared_ptr`，可以在最后一个`std::shared_ptr`析构时**就释放指向的对象**，只留着控制块等待最后一个`std::weak_ptr`被析构
+
+如果用new，就保证立刻把new的结果传给智能指针的构造函数，**不要再做其他的事**导致内存泄漏
+
+## 条款22：使用Pimpl习惯用法时，将特殊成员函数的定义放在实现文件中
+
+Effective C++老生常谈的接口和实现分离的Pimpl写法（减少编译依赖性）...简单来说就是把基类中的某个数据成员用一个指向它的具体实现的函数/类的指针来替代
+
+第一部分是声明一个指针type的数据成员，指向一个非完整type(Pimpl)；第二部分是**动态分配和回收原本在类内的数据成员的对象**，放在实现文件中
+
+这里的Pimpl可以使用智能指针
+
+注意P144的例子，析构函数需要出现在Impl这个struct被定义前被声明，再在Impl的定义后被定义，因为默认析构函数隐式inline，它需要在被**创建前看到被析构对象是一个完整的对象**。移动函数也是，因为移动操作涉及到先把原本的Impl对象析构再移动
+
+但如果使用的是`std::shared_ptr`，就不需要上面这些限制，因为对`std::unique_ptr`而言，deleter是它的一部分，这使得编译器产生更小的运行期数据结构和更快的代码。代价就是**如果要使用编译器生成的特种函数，其指向的type必须是完全型别**。但`std::shared_ptr`虽然占用大，速度慢，却不要求指向的需要是完整型别
+
+
+
+
+
+ 
