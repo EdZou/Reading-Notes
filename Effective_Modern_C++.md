@@ -992,8 +992,529 @@ Effective C++老生常谈的接口和实现分离的Pimpl写法（减少编译�
 
 但如果使用的是`std::shared_ptr`，就不需要上面这些限制，因为对`std::unique_ptr`而言，deleter是它的一部分，这使得编译器产生更小的运行期数据结构和更快的代码。代价就是**如果要使用编译器生成的特种函数，其指向的type必须是完全型别**。但`std::shared_ptr`虽然占用大，速度慢，却不要求指向的需要是完整型别
 
+## 条款23：理解std::move和std::forward
 
+`std::move`和`std::forward`都不会生成任何可执行代码，连一个字节都不会生成
 
+`std::move`和`std::forward`都仅仅是执行强制类型转换的函数（模板）。`std::move`**无条件**将实参转换为右值；`std::forward`在满足**特定条件时**执行同一种强制转换
 
+`std::move`的本质：`static_cast<remove_reference<T>::type&&>(param)`，确保返回右值引用，**本质是强制类型转换而非字面意思的移动**
 
- 
+如果想去的某个对象移动操作的能力，**不要声明为常量**，不然会隐式地执行copy操作
+
+`std::move`不实际移动任何东西，也不保证强制类型转换后的对象具备移动能力，只保证结果是个右值
+
+`std::forward`有如下例子：
+
+```c++
+void process(const Widget& lvalArg);  // 左值重载版本
+void process(Widget&& rvalArg);		  // 右值重载版本
+
+template<typename T>
+void logAndProcess(T&& param) {
+    ... // log部分
+    process(std::forward<T>(param));
+}
+```
+
+这里因为所有函数形参都是左值，param也不例外，如果不做处理永远用不了process函数右值的重载版本，这时使用`std::forward`，当T为右值时，才会强制转换为右值
+
+理论上`std::move`完全可以被`std::forward`取代掉，但`std::move`也有优势：方便，减少错误可能，更清晰
+
+## 条款24：区分万能引用和右值引用
+
+`T&&`有两种不同的含义，一种是右值引用，另一种就是万能引用（既可以是左值也可以是右值，const与否和volatile与否都可以用）
+
+万能引用会在两种场景下现身：
+
+1. 函数template的形参，如下：
+
+   ```c++
+   template<typename T>
+   void f(T&& param);    // param是个万能引用
+   ```
+
+2. 第二为auto声明，如下：
+
+   ```c++
+   auto&& var2 = var1;  // var2是个万能引用
+   ```
+
+万能引用的共通处就是**都涉及型别推导**，如果不涉及型别推导，那么就是右值引用，如下：
+
+```c++
+Widget f(Widget&& param);  		  // param是个右值引用
+
+template<typename T>
+void f(std::vector<T>&& param);   // param是个右值引用
+```
+
+万能引用转换的param首先是个引用，然后根据引用折叠，如果初始化物是左值->param为左值引用；初始化物为右值->param为右值引用
+
+如果想让引用成为万能引用，**涉及type推导是一个必要条件，但不充分**。引用声明的形式也是如`T&&`这样限定死的，如上例中`void f(std::vector<T>&& param)`，`std::vector<T>&&`不是`T&&`的形式，就会产生右值引用。这是传一个左值引用编译器会报错：
+
+```c++
+std::vector<int> v;
+f(v);                     // 报错，不能给右值引用绑定左值
+```
+
+ 即使是一个const存在，万能引用也不成立：
+
+```c++
+template<typename T>
+void f(const T&& param);  // param是一个右值引用
+```
+
+但也不是满足了`T&&`形式且在template内就是万能引用
+
+```c++
+template<class T, class Allocator = allocator<T>>
+class vector {
+    public:
+    	void push_back(T&& x);    // 这个不是万能引用！！！
+}
+```
+
+这里不是万能引用的原因：push_back实际是属于一个已经推导出type的实例，而不是在push_back处进行推导
+
+而对于`auto&&`，全都是万能引用，因为一定涉及到type推导
+
+## 条款25：针对右值引用实施std::move，针对万能引用实施std::forward
+
+如果形参类别是右值引用，则绑定的对象一定可供移动，当我们需要保留右值性时，就可以用到`std::move`
+
+就像前面说到的，形参类别为万能引用是并**不保证对象一定可移动**，所以这就可以用到`std::forward`
+
+对万能引用使用`std::move`可以让人抓狂：
+
+```c++
+class Widget {
+    public:
+    	template<typename T> 
+    	void setName(T&& newName) {  // 万能引用，糟糕的设计
+            name = std::move(newName);
+        }
+    private:
+    	std::string name;
+    	...
+};
+
+std::string getWidgetName();         // factory函数
+Widget w;
+auto n = getWidgetName();
+w.setName(n);                        // 移入w后n的值未知
+```
+
+该例中局部变量n传入w.setName()，使用者也会假定这是在传副本，认为这是一个只读操作。但使用`std::move`使得n无条件转为右值，n被移入w.name，n的值就不确定了
+
+如果不使用万能引用而使用重载版本，如下：
+
+```c++
+class Widget {
+    public:
+    	void setName(std::string&& newName) {      // 传入右值
+            name = std::move(newName);
+        }
+    	void setName(const std::string& newName) { // 传入左值
+            name = newName;      
+        }
+    private:
+    	std::string name;
+    	...
+};
+
+// 调用
+w.setName("ABC");
+
+```
+
+使用万能引用：字面值"ABC"被传给setName，然后传给内部std::string赋值（直接从字面得到赋值）
+
+使用重载版本：先产生一个临时变量以供形参绑定再通过移动操作给内部的w.name，最后再把临时量销毁
+
+所以重载版本**消耗一定大**一些
+
+还有就是如果有多个形参，那么万能引用还是一个版本，重载版本则需要2^n个，包括函数模板会有无数个形参，都是只能使用万能引用的
+
+在return-by-value的函数中，如果**返回的是绑定到一个右值引用或万能引用的对象（输入实参）**，那么返回时使用`std::move`或`std::forward`（P165老生常谈的矩阵运算，不用这俩函数转右值就会copy一份降低效率）
+
+但注意一定不要把这俩函数用到局部变量上。关于这点，书中提到了**返回值优化（return value optimization, RVO）**：当编译器要在一个按value返回的函数里省略对局部对象的copy/move，需要满足两个前提：
+
+1. 局部对象type和函数返回值type一致
+2. 返回的就是局部对象本身
+
+所以编译器对于局部变量的返回其实是会**自动优化成无copy的版本的**，要么复制省略，要么隐式地调用`std::move`施加在返回对象上
+
+一旦使用`return std::move(res)`或者`std::forward`版本，返回的就**不是局部对象的本身**，而是其引用，所以RVO这时并不满足
+
+## 条款26：避免依万能引用型别进行重载
+
+P170例子，一旦万能引用成为了重载版本函数之一，它几乎可以**精准匹配所有的类型**，所以会吸走大批的实参型别，往往比预想的多得多
+
+P172给出了一个天怒人怨的例子：
+
+```c++
+class Person {
+    public:
+    	template<typename T>
+    	explicit Person(T&& n)      // 完美转发构造函数（雷点）
+    	: name(std::forward<T>(n)) {}
+    	explicit Person(int idx);
+    	
+    	// 因为构造函数是模板，不会影响编译器自动合成复制和移动操作
+    	// 编译器自动生成的复制和移动构造函数可以理解为如下:
+    	Person(const Person& rhs);	// 复制构造函数
+    	Person(Person&& rhs);       // 移动构造函数
+};
+
+// 一个使用案例
+Person p("Nancy");
+auto cloneOfP(p);                   // 试图通过p创建新的Person对象，无法过编译
+```
+
+使用案例过不了编译的原因很简单，因为底层调用了完美转发构造函数而不是复制构造，因为这里p是一个`Person& rhs`而非`const Person& rhs`，编译器会选择有万能引用的构造函数，这时，我们试图用Person类型的对象p给name赋值，自然就会失败了
+
+如果使用`const Person p("Nancy");`初始化，那么就会正常调用复制构造函数，成功
+
+包括如果试图用基类初值表初始化时，也会使用基类中的万能引用构造函数（P174）
+
+## 条款27：熟悉依万能引用型别进行重载的替代方案
+
+#### 舍弃重载
+
+命名成多个不同的名字，不是长久之计
+
+#### 传递const T&型别的形参
+
+这就是条款26的第一种问题的解决方式，也分析过了，分别重载左值和右值会导致必然造成拷贝，进而效率下降，是一种值得权衡利弊的手段
+
+#### 传值
+
+把传递的形参从传reference改成传value，条款41会再讨论效率问题（我就觉得传value必复制效率好不起来）
+
+#### 标签分派
+
+如果使用万能引用是为了**完美转发**，那就只有万能引用一条路
+
+可以让万能引用仅仅成为**形参列表的一部分**，表中还有其他的非万能引用参数，只要完美转发函数具备**充分差(sufficiently poor)**的匹配能力就可以避免重载问题
+
+P177提供了一个通过本质在`logAndAddImpl`这个实现函数处重载的版本，`logAndAdd`使用万能引用接受所有实参，再让实现函数根据是否是int来判定函数的使用。注意这里使用`std::true_type`和`std::false_type`来在编译期完成版本选择
+
+而这种设计中`std::true_type`和`std::false_type`就是所谓的**标签**，存在的目的就是强制重载选择向我们希望的方向推进。注意这些形参甚至**没有名字，在运行期没有任何作用**
+
+#### 对接受万能引用的模板加以限制
+
+这里出现了新的问题，那就是编译器自动合成的构造函数可能直接**绕过了标签分派系统**。但这其实不是问题，最怕的是编译器自动合成的构造函数**不一定保证能绕过标签分派系统**，比如上个条款26中提到的**非常量左值初始化**，会直接给到万能引用的函数去使用
+
+解决方法是使用`std::enable_if`。`std::enable_if`可以强制编译器表现出来的行为**如同特定模板不存在一般**，这样的模板被称为**禁用**。默认所有模板都是enable的，实施了`std::enable_if`的模板只有在满足指定条件时才enable
+
+语法例子（具体原理看”SFINAE“）：
+
+```c++
+class Person {
+    public:
+    	template<typename T,
+    			 typename = typename std::enable_if<condtion>::type>
+        explicit Person(T&& n);
+}
+```
+
+但这里注意条件判断时要把1. 是否是引用；2. 是否是const；3. 是否是volatile都考虑进去。这里使用`std::decay`把以上三个属性**全都移除**（decay也可以用于把数组和函数类型**强制转换为指针类型**），具体的条件判断就交给`std::is_same`来完成，最终结果如下
+
+```c++
+// !std::is_same<Person, typename std::decay<T>::type>::value
+class Person {
+    public:
+    	template<typename T,
+    			 typename = typename std::enable_if<
+                     !std::is_same<Person,
+    							   typename std::decay<T>::type
+                     			   >::value
+                 >::type
+        >
+        explicit Person(T&& n);
+}
+```
+
+最后就是条款26也提到的derived class使用copy和移动操作时，会被万能引用劫持的问题
+
+这里就该使用`std::is_base_of`来判断了，改进后的版本如下：
+
+```c++
+class Person {
+    public:
+    	template<typename T,
+    			 typename = typename std::enable_if<
+                     !std::is_base_of<Person,   // 可以同时判断dervied和base自身
+    							      typename std::decay<T>::type
+                     			      >::value
+                 >::type
+        >
+        explicit Person(T&& n);
+}
+```
+
+最后再加上int部分，也就是前一方法中使用标签分派解决的部分
+
+```c++
+class Person {
+    public:
+    	template<typename T,
+    			 typename = typename std::enable_if<
+                     !std::is_base_of<Person,   
+    							      typename std::decay<T>::type
+                     			      >::value
+                     &&
+                     !std::is_integral<
+                                      typename std::remove_reference<T>::type
+                                      >::value
+                 >::type
+        >
+        explicit Person(T&& n);
+}
+```
+
+#### 权衡
+
+前三种（舍弃重载，传递const T&型别的形参和传value）都需要对函数形参逐一指定type；后两种（标签分派和enable施加资格）则利用了完美转发，不需要指定形参type
+
+完美转发效率更高，但也有缺点：1. 一些type无法完美转发（条款30）2. 传递非法形参时，错误信息难以理解（这也是为什么很多程序员不适用万能引用形参的原因）
+
+P186使用`static_assert`和`std::is_constructible`来判定和报错，但这些错误信息也会混杂在长串的errorMsg中
+
+## 条款28：理解引用折叠
+
+C++ primer里也详细讲过，这里仅作补充
+
+引用的引用是**非法的**，所以会产生引用折叠，P189中`std::forward`的实现和C++上的大同小异，如下：
+
+```c++
+template<typename T>
+T&& forward(typename remove_reference<T>::type& param) {
+    return static_cast<T&&>(param);
+}
+```
+
+这里提供的分析相比于C++ primer更详细，但我当时推过了这里不再赘述
+
+引用折叠的语境有**四种**：
+
+1. 模板实例化
+2. auto变量的type生成，如`auto&& w1 = w2;`
+3. 生成和使用typedef和别名声明（using）
+4. decltype的运用中
+
+## 条款29：假定移动操作不存在，成本高，未使用
+
+从为什么许多类别不能支持move的语义开始：C++11翻修了C++98，但老代码很多没有move支持，即使编译器能合成，也基于代码没有自定义复制，移动和析构函数。即使对于C++11，所有容器都支持move，但对有些容器而言，move根本没有更低廉；对于另一些容器，虽然低廉，但又有一些附加条件使得容器元不能满足
+
+比如`std::array`(P194)，其他容器都是存储在堆上，move的时候把指向对象数据的指针一一复制就可以达到o(n)，但`std::array`本质还是旧式数组，都是直接存储数据，move并不会快（比move指针可慢多了）
+
+作为对比，`std::string`可以o(1)移动以及o(n)的复制效率，**像是说移动必比复制快，实际未必**。许多string的实现都使用了**小型字符串优化（small string optimization， SSO）**。采用SSO后，小型字符串（容量不超过15）会存储在`std::string`的某个缓冲区内而不是使用heap上的储存，这时对小型字符串的移动就不会比复制更快
+
+总之有以下几个场景，move并没啥好处：
+
+1. 没有移动操作：对象不提供，move本质成copy
+2. 移动未能更快：上例的`std::string`
+3. 移动不可用：本可以发生的语境上，比如要求noexcept但move操作没有，就使用满足noexcept的复制操作
+4. 撰写template时：必须想C++98一样保守的使用copy，因为不知道哪些type能用move哪些不能，会造成**不稳定**的代码
+
+## 条款30：熟悉完美转发的失败情形
+
+转发函数天然泛型，例子如下：
+
+```c++
+template<typename... Ts>
+void fwd(Ts&&... param) {
+    f(std::forward<Ts>(params));
+}
+```
+
+当给定目标函数f和转发函数fwd，如果**直接把实参给f**和**先给fwd再给f**（上面实例代码）的结果不一样，那么称为**完美转发失败**
+
+#### 大括号初始化物
+
+比如：
+
+```c++
+void f(const std::vector<int>& v);
+
+f({1,2,3});
+fwd({1,2,3});
+```
+
+当直接使用f时，编译器会比较类型是否兼容，找隐式转换，并创建一个临时的vector传给f
+
+但使用转发间接调用时，编译器就不会比较fwd转发的实参和f中形参的兼容性了。取而代之用推导的手法，完美转发会在以下两个条件任意一个成立时失败：
+
+1. 编译器无法为一个或多个fwd的形参推导出type结果（编译不通过）
+2. 编译器为一个或多个fwd的形参退出了**错误的**type结果。这里的错误既可以指fwd根据推导结果实例化通不过编译，也可以指fwd和f的type行为不一致（因为f可能有重载版本）
+
+本例中由于fwd的形参未声明为`std::initializer_list`，编译器会禁止调用过程中从{1，2，3}开始推导
+
+但auto可以绕行，因为auto会把类型推导为`std::initializer_list`：
+
+```c++
+auto il = {1,2,3};
+fwd(il);                // 完美转发成功
+```
+
+#### 0和NULL用作空指针
+
+很简单，之前也提到过被推导成整型，一定记得用nullptr
+
+#### 仅有声明的整型static const成员变量
+
+有个规定：不需要给出类中static const成员变量的定义，只需声明即可。因为编译器会根据这些成员的值实施常数传播（简单的来说类似于C中宏的编译期替换），从而不需要保留它们的地址
+
+static const在声明处定义可以供其他成员使用，但f和fwd就会产生完全不同的后果。因为fwd的形参是一个万能引用，引用的底层又是指针，也**通常被当成指针处理**，然后编译器又不给static const保留地址，就会报错。而传value的f函数并不会
+
+#### 重载的函数名字和模板名字
+
+如下情况：
+
+```c++
+void f(int (*pf)(int));
+
+int processVal(int value);
+int processVal(int value, int priority);
+
+f(processVal);   // 成功
+fwd(processVal); // 失败
+```
+
+能运行是因为**f的声明式**让编译器弄清了哪个版本的重载函数
+
+但对于fwd无type根本无从推导，template也是类似的情况
+
+想要解决只能**手动指定转发的重载版本或实例**，比如使用一个指针，如下：
+
+```c++
+using processFuncType = int (*)(int);
+processFuncType processValPtr = processVal;
+
+// 重载函数
+fwd(processValPtr);
+// 模板
+fwd(static_cast<processFuncType>(workOnVal));
+```
+
+#### 位域
+
+如下例：
+
+```c++
+struct IPv4Header {
+    std::uint32_t version:4,
+    			  ...
+                  totalLength:16;
+};
+
+void f(std::Size_t sz);
+IPv4Header h;
+
+f(h.totalLength);    // 成功
+fwd(h.totalLength);  // 失败
+```
+
+因为fwd的形参是一个引用，而h.totalLength是一个non-const的位域。C++有明确要求：**引用不能绑定到non-const位域（不能直接取址）**
+
+这也导致任何接受位域实参的函数实际上**只会收到副本**，也可以通过下面办法完成位域的完美转发
+
+```c++
+auto length = static_cast<std::uint16_t>(h.totalLength);
+fwd(length);
+```
+
+## 条款31：避免默认捕获模式
+
+一些术语：
+
+1. lambda表达式，就是源码部分
+2. 闭包是lambda表达式创建的运行期对象，根据不同的捕获模式，闭包会持有数据的副本或引用
+3. 闭包类旧式实例化闭包的类。每个lambda表达式都会触发编译器生成一个**独一无二**的闭包类。闭包中的语句就会成为闭包类成员函数的可执行指令（C++ primer也有样例）
+
+两种捕获写法如下：
+
+```c++
+[&](int value) { return value % divisor == 0; }
+[&divisor](int value) { return value % divisor == 0; }
+```
+
+虽然两种都不安全，使用局部变量的引用**极易造成空悬指针**，但后者显式地列出lambda式所依赖的局部变量或形参是更好的软件工程实践
+
+C++14可以在lambda形参的声明中使用auto，如`[&](const auto& value){...}`
+
+哪怕是使用值捕获如`[=](...) { ... }`，如果捕获的是指针的副本，也会造成空悬指针
+
+捕获只能针对**lambda表达式所在作用域的非静态局部变量（包括形参）**
+
+P209开始一直在讨论成员函数内的lambda表达式如何捕获一个类中的static变量，
+
+1. 有捕获this然后指针的，但这样也可能会导致空悬，因为把对象emplace到一个filter中，尔后对象自身被删除就又又又空悬指针了
+
+2. 也可以在成员函数内直接用局部变量copy一个，然后让lambda捕获
+
+3. **广义lambda捕获（generalized lambda capture）**是更优秀的方案，如下：
+
+   ```c++
+   void Widget::addFilter() const {
+       filters.emplace_back(
+           [divisor = divisor](int value) { // 广义捕获把divisor copy进闭包
+               return value % divisor == 0;
+           }
+       )
+   }
+   ```
+
+默认值捕获另一个缺点是：静态数据的生存周期隐式的依赖于**静态存储周期（static storage duration）**，static数据可以在lambda中使用，却又不能被捕获，这会让人产生”他们已经被捕获“的错觉
+
+## 条款32：使用初始化捕获将对象移入闭包
+
+C++14的**初始化捕获**特性，也就是**捕获一个表达式的结果**，能让对象move进闭包，C++11不支持。
+
+因为使用表达式使得捕获的概念得到了泛化，所以又被称为**广义lambda捕获**
+
+比如P213的例子：`auto func = [pw = std::move(pw)](){...}`
+
+在这个捕获中，位于=左右两侧的处于不同的作用域：左侧是闭包类成员变量的名字，位于闭包类作用域；右侧是初始化表达式，位于lambda定义所在的作用域
+
+P214提供了一个直接把闭包类得本质内容实现出来的样例。但如果我们非要用lambda式来完成，按移动捕获，可以按照以下思路：
+
+1. 把需要捕获的对象移动到std::bind产生的函数对象中
+2. 给lambda式一个指向”欲捕获对象“的引用
+
+例子如下：
+
+```c++
+std::vector<double> data;       // 想要move进闭包的对象
+
+// C++14版本
+auto func = [data = std::move(data)] {...}
+
+// C++11的实现
+auto func = std::bind(
+    [](const std::vector<double>& data) { ... },
+    std::move(data)
+);
+```
+
+std::bind的第一个实参是callable object，接下来的所有实参都是传给这个callable object的实参，返回一个**绑定对象（binding object）**
+
+对于每个左值实参，在绑定对象内都是copy构造；对于右值实参都是move构造。
+
+默认lambda生成的闭包类中operator()成员函数会带有const饰词，但binding obj得到的data副本却不带const，所以要在lambda形参声明上加上const
+
+如果lambda声明带有mutable，那么闭包里的operator()就不会在声明时带有const饰词，相应的，形参就要省略const，如下：
+
+```c++
+auto func = std::bind(
+    [](std::vector<double>& data) mutable { ... },
+    std::move(data)
+);
+```
+
+闭包的生命周期和binding obj是相同的，因为闭包本就是binding obj的一部分
+
+## 条款33：对auto&&型别的形参使用decltype，以std::forward之
+
