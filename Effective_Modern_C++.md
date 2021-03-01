@@ -1518,3 +1518,485 @@ auto func = std::bind(
 
 ## 条款33：对auto&&型别的形参使用decltype，以std::forward之
 
+C++14允许lambda在形参中使用auto，这个特性的实现：闭包类中operator()采用模板实现，比如：
+
+```c++
+auto f = [](auto x) { return func(normalize(x)); }
+
+class GeneratedClassName {
+    public:
+    	template<typename T>
+    	auto operator()(T x) const
+    	{ return func(normalize(x)); }
+}
+```
+
+但这里因为即使是使用auto，如果x是一个右值，也会以左值被传递到normalize中去。解决这个问题的还是使用完美转发，如下
+
+```c++
+auto f = [](auto&& x)
+	{ return func(normalize(std::forward<???>(x))); }
+```
+
+问题就在怎么写???的内容，书中讨论了`decltype(x)`的可能性。因为如果传左值，decltype给左值引用type；传右值，decltype给右值引用type，而非惯例的非引用
+
+但根据我们一开始实现的std::forward转发，即使Widget变成了Widget&&也丝毫不影响结果，于是有了我们的最终版本：
+
+```c++
+auto f = [](auto&& x)
+	{ return func(normalize(std::forward<decltype(x)>(x))); }
+```
+
+## 条款34：优先选用lambda式，而非std::bind
+
+lambda在C++11中已经是优势，在C++14中更是不二之选。学这章最主要是怕你以后需要维护老代码（书上说的笑死我了）
+
+优先选用lambda的原因：具备更强的可读性。P220举了一个alarm的例子
+
+```c++
+// lambda版本：
+auto setSoundL = [](Sound s) {
+    using namespace std::chrono;
+    using namespace std::literals;
+    
+    setAlarm(steady_clock::now() + 1h,  // 一小时后报警
+             s,
+             30s);                      // 持续30s
+}
+
+// std::bind版本
+auto setSoundB = std::bind(
+    setAlarm,
+    steady_clock::now() + 1h,
+    _1,
+    30s
+);
+```
+
+这个bind版本首当其冲的问题就是`_1`作为补位符可读性差，行家都要靠脑补。本例中更大的问题是`steady_clock::now() + 1h`会直接求得结果并把**当前时间**直接作为实参传递给binding obj
+
+要解决这个问题，只能去**延迟表达式的评估求值调用时刻**，实现这点需要嵌套bind，如下：
+
+```c++
+auto setSoundB = std::bind(
+    setAlarm,
+    std::bind(std::plus<steady_clock::time_point>(),
+              steady_clock::now(),
+              hours(1),
+    _1,
+    seconds(1)
+);
+```
+
+而且一旦对setAlarm实施**重载**，比如接受第四个形参volume，那么lambda的运行不受影响，编译器会选择三参数的老版本运行。但std::bind的调用过不了编译，因为编译器**无法确定哪个版本的setAlarm**该传给bind，必须用**强制转型**才能过编译，如下：
+
+```c++
+using SetAlarm3ParamType = void(*)(Time t, Sound s, Duration d);
+
+auto setSoundB = std::bind(
+    static_cast<SetAlarm3ParamType>(setAlarm),    // 强制转型
+    std::bind(std::plus<steady_clock::time_point>(),
+              steady_clock::now(),
+              hours(1),
+    _1,
+    seconds(1)
+);
+```
+
+这样就能看出来lambda和bind的另一个不同之处，lambda就是普通的函数调用，这意味着编译器也可以用惯常的手法inlining。但在改进后的bind版本中，对setAlarm的调用是要通过函数指针发起的，**编译器不太会inlining函数指针发起的函数调用**，inline成功的概率低很多
+
+还有就是std::bind的实参**都是按值储存的**，而lambda都是显式指定出来的
+
+而对于callable obj的实参传递，std::bind都是**传引用**，因为实现利用了完美转发。而lambda也是显式指定出来的。综合以上明显可读性强得多
+
+在C++14中完全没有std::bind的出场空间，而C++11中也仅在两个受限的场景中：
+
+1. 移动捕获。见条款32
+2. 多态函数对象。因为std::bind的实现利用了完美转发，可以接受任意类型的参数，但C++11中lambda没有auto，type都是限定死的
+
+## 条款35：优先选用基于任务而非基于线程的程序设计
+
+试图以异步方式运行函数doAysncWork，有两种选择：
+
+1. 基于线程（thread-based）:
+
+   ```c++
+   int doAsyncWork();
+   std::thread t(doAsyncWork);
+   ```
+
+2. 基于任务（task-based）：
+
+   ```c++
+   auto fut = std::async(doAsyncWork)
+   ```
+
+为什么选用task-based呢，很简单，这里有一个返回值`fut`，在thread-based方法中，没什么简单的方法能获取到这个值。这意味，如果doAsyncWork发射了一个异常，thread-based会直接经由`std::terminate`把程序shut down；但task-based可以通过返回值的get函数来捕捉异常
+
+根本的区别在，task-based的程序设计有**更高阶的抽象**（说白了就是离底层硬件更远）
+
+**线程**在C++中的三种意义：
+
+1. 硬件线程，实际执行计算的线程。现代计算机会为每个CPU内核提供一个或多个硬件线程
+2. 软件线程（OS线程或系统线程）。操作系统用以实施跨进程管理以及进行硬件线程调度的线程，往往比硬件线程多
+3. `std::thread`是C++进程里的对象，用作底层软件的handle。null handle的可能原因有：处于默认构造状态（无待执行的函数），被移动了（移动后的`std::thread`成为新的handle），被连结了（带运行的函数已经运行结束），被分离了（`std::thread`对象与底层软件线程的连接被切断）
+
+软件线程是有限的资源，如果创建大于系统能提供的数量，会抛出`std::system_error`异常。
+
+即使没有用尽线程，也可能发生**超订（oversubscription）**的问题，也就是当ready状态的软件线程超过了硬件线程的数量时，线程scheduler就会用时间片的方式轮换，这样切换损失大：1. 切换cache几乎不会被命中，要重新加载 2. CPU为旧线程准备的数据被污染
+
+而且软硬线程的最佳比例也取决于IO密集和计算密集，切换的成本，计算机系统等等细节，管理十分繁琐。`std::async`就是std提供的**线程管理**方法
+
+以默认启动策略（条款36）调用`std::async`时，系统**不保证会创建一个新的**软件线程，它允许scheduler运行在请求doAsyncWork结果的线程中（对fut调用get或wait的线程），如果系统发生超订或线程耗尽，合理的scheduler就可以利用这个自由度
+
+即使使用`std::async`，GUI线程响应性也会有问题，因为scheduler无法知道哪一个线程响应性的需求更紧迫
+
+如果使用了`std::thread`进行程序设计，就要自行承担线程耗尽，超订以及负载均衡的责任
+
+但仍有几种情况，可以用`std::thread`
+
+1. 需要访问底层线程实现的API（如pthread等）
+2. 需要且有能力为你的应用优化线程用法
+3. 超越C++并发API的实现技术（如线程池）
+
+## 条款36：如果异步是必要的，则指定std::launch::async
+
+仅仅通过`std::async`来运行并不一定会达成异步运行的结果，我们要求的仅仅是让该函数以符合`std::async`的**启动策略**来运行。标准策略有二，都是限定作用域的enum `std::launch`来表示的：
+
+1. `std::launch::async`启动策略意味着函数f**必须以异步方式**运行，也就是在另一线程之上执行
+
+2. `std::launch::deferred`启动策略意味着函数f之后在`std::async`所返回的期值的get或wait得到调用时才运行。也就是会推迟到其中一个调用发生的时候
+
+   当调用get或wait时，f会同步运行。也就是调用方会阻塞f运行结束为止。如果不调用get或wait，f不运行
+
+出人意料的是，**默认启动策略**不是上面的任意一个，而是对上面两种进行**或运算**的结果，也就是下面两种调用有着完全相同的意义
+
+```c++
+auto fut1 = std::async(f);
+auto fut2 = std::async(std::launch::aync |
+                       std::launch::deferred,
+                       f);
+```
+
+这也意味着默认启动策略允许f以**异步或同步运行**，这样就给`std::async`提供了足够的弹性
+
+但这也会导致模糊性，如下面语句
+
+```c++
+auto fut = std::async(f);         // 默认策略运行f
+```
+
+1. 无法预知fut是否会和t并发运行，f有可能deferred
+2. 无法预知f是否和调用fut的get和wait的线程位于不同的线程上
+3. 甚至f是否会运行都无法预知，不一定保证每条路径都运行get或wait
+
+如果f读或写此**线程级局部存储（thread-local storage，TLS）**，无法预知是在读哪个线程的局部存储
+
+```c++
+auto fut = std::async(f);     // f的TLS可能是一个独立线程上的
+							  // 也可能是调用fut的get或wait有关的线程
+```
+
+如下循环可能是死循环：
+
+```c++
+while (fut.wait_for(100ms) != std::future_statud::ready)
+```
+
+fut可能永远返回`std::future_status::deferred`，然后死循环
+
+避免的方法并不难：检验`std::async`的返回值，确定是否deferred，如果是就不进入这个死循环
+
+如下：
+
+```c++
+if (fut.wait_for(0s) == std::future_status::deferred) {
+    ...
+} else {
+    while (fut.wait_for(100ms) != std::future_statud::ready) {
+        ...
+    }
+}
+```
+
+综上，`std::async`正常运行的条件是
+
+1. 任务不需要和调用get或wait并发运行
+2. 读写任意线程的TLS无影响
+3. 可以保证调用get/wait，或者可接受f永不运行
+4. 使用wait_for或wait_until的代码会将任务被deferred的可能性纳入考量
+
+以上条件全部满足才行，如果非要异步运行，就：
+
+```c++
+auto fut = std::async(std::launch::async, f);
+```
+
+当然也可以如P235一样写一个完美转发函数，把异步运行定成默认的
+
+## 条款37：使std::thread型别对象在所有路径皆不可联结
+
+`std::thread`可联结：底层以异步方式已运行或可运行的线程，线程处于阻塞或等待调度或运行至结束
+
+`std::thread`不可联结：
+
+1. 处于默认构造状态（无待执行的函数）
+2. 被移动了（移动后的`std::thread`成为新的handle）
+3. 被连结了（带运行的函数已经运行结束）
+4. 被分离了（`std::thread`对象与底层软件线程的连接被切断）
+
+`std::thread`的可联结性重要的原因之一是，如果**可联结线程对象的析构函数被调用，程序直接终止**
+
+P237就是一个，如果线程被创建却又没有满足条件导致未被联结，那么函数结束时，t处于可联结状态并被析构，会导致整个程序终止
+
+为什么仅仅是可联结的`std::thread`被析构就会终止呢？因为其他的选项更糟糕：
+
+1. 隐式join。性能异常，该例中，明明condition都false了，doWork还在等待上万次的traverse筛选
+2. 隐式detach。`std::thread`的析构函数分离和底层执行线程的联结。而此时底层的执行线程还会继续执行。然而比如在此例中，goodVals是捕获到的局部变量的引用，lambda式会更改它的值，如果doWork条件不满足，局部变量都被销毁，但底层执行线程还在运行。可能之后有其他函数再使用之前的局部变量的内存，却发现**被仍在运行的底层执行线程修改**了，极难debug
+
+所以要解决被析构就终止的问题，只能程序员自己来，一般使用**RAII对象（Resource Acquisition Is Initialization）**，让threadRAII析构时，就会调用我们定义的析构函数（C++ primer中有类似操作）
+
+P239有ThreadRAII的实现。注意对一个不可联结的线程调用join或detach会产生未定义行为。在P240的例子中，在程序终止，性能异常和undefined行为之中，选择了join引起的性能异常
+
+注意ThreadRAII的实现中，成员列表的最后再声明std::thread对象
+
+## 条款38：对变化多端的线程句柄析构函数行为保持关注
+
+条款37提到了，可联结的线程有一个对应的底层执行线程，**未deferred任务的期值**和系统线程也有类似关系。这么一来，`std::thread`对象和期指对象都可以视作系统线程的handle
+
+从这里开始讨论期值的析构函数，它的行为有时像执行一次隐式join，有时像一次隐形detach，有时候二者都没执行。但**从不会导致程序终止**
+
+期值位于信道的一端，从被调方通过信道传送到调用方。被调方一般用异步形式把结果写入信道（经由一个std::promise），调用方使用一个期值读取结果
+
+那么被调方的结果写在哪呢？
+
+1. 被调方：不行，可能调用结束后被调方已经被析构，调用方还未读取，那么这个结果作为局部变量会直接销毁
+2. 调用方：不行，可能从`std::future`对象出发创建`std::shared_future`对象，后者很可能会在原始的`std::future`先析构之后再copy多次。假如被调方的结果并不是都copyable（只移型别），那么生存期至少要延长到最后一个指向它期值，而shared_future里这么多对象选哪一个呢
+3. 共享状态：和调用方，被调方都不关联，一般在堆上（共享内存，线程通信，消息队列）
+
+共享状态很重要，期值的析构就与之直接相关：
+
+1. 指向经由`std::async`启动的，未deferred任务的共享状态的最后一个期值会保持阻塞，直至任务结束。本质是对底层异步执行任务的线程实施了一次隐式join
+2. 其他所有期值对象的析构函数只仅仅是将期值对象析构就结束了。这样就类似于对线程做一次隐式detach，如果该期值是最后一个，那么还在deferred任务就不会再运行了
+
+简单地说分为两部分：
+
+1. “常规”行为：期值的析构函数仅仅析构期值对象。不join也不detach还不运行，然后就是只对共享状态里的引用计数进行一次自减
+
+2. “例外”行为：只有在满足下面所有条件时才发挥作用：
+
+   1. 期值指向的共享状态是通过调用`std::async`才创建的
+   2. 该任务的启动策略是`std::launch::async`，这既可能是系统选的，也可能是用户指定的
+   3. 该期值是指向该共享状态的最后一个期值。
+
+   这时，才会出现例外行为，具体表现为阻塞直到异步运行的任务结束，从效果上看就是隐式join()
+
+但期值的API没有任何办法来判断共享状态是否通过调用`std::async`创建。
+
+但有其他的办法创建出共享状态，那就是使用`std::packged_task`（不可复制）。`std::packged_task`会准备一个函数以供异步执行，手法是加上一层包装，把结果置入共享状态，而指向共享状态的的期值也可以经由`std::packged_task`的`get_future`函数得到
+
+## 条款39：考虑针对一次性事件通信使用以void为模板型别实参的期值
+
+线程间通信
+
+1. 最简单就是使用条件变量，用mutex+一个condition var来完成，分成**检测任务**和**反应任务**，检测任务检测条件变量cv：
+
+   ```c++
+   std::condition_variable cv;      // 事件的条件变量
+   std::mutex m;					 // 给cv用的mutex
+   // 检测代码
+   cv.notify_all();
+   ```
+
+   反应任务如下：
+
+   ```c++
+   std::unique_lock<std::mutex> lk(m);
+   cv.wait(lk);
+   ```
+
+   不是啥好的解决方案，不是wait-free：
+
+   1. 如果检测任务在反应任务调用wait前就notify了条件变量，那么反应任务失去响应，那么另一个任务就会等条件变量等到天荒地老
+
+   2. 反应任务wait语句无法应对虚假唤醒。很多语言都是，**即使没有通知条件变量，针对该条件变量等待的代码也被唤醒，这就是虚假唤醒**。正确的代码被唤醒后第一件事就是确认这一点，在C++中：
+
+      ```c++
+      cv.wait(lk,[](){ return 事件是否确认已发生; });
+      ```
+
+2. 使用共享的bool表示位（共享内存）
+
+   poll成本高昂，自旋锁都需要背地里一直运行
+
+3. 结合表示位和条件变量（Peterson算法也这个想法）
+
+   常用的手法，访问标识符需要mutex，这里当反应任务被唤醒，就可以通过检查bool标识符来确认是否真的事件发生了，但仍然不够好
+
+4. 拜托条件变量，互斥量和标志位，让反应任务等待检测任务设置的期值（像是pipe的思想）
+
+   设计简单可行：检测任务有一个`std::promise`的对象（信道写入端），反应任务也有相应的期值。当事件发生，检测任务设置`std::promise`的对象（即写入信道）。与此同时，反应任务已经调用wait等待了，wait调用会阻塞反应任务直至`std::promise`对象被设定为止
+
+   因为没有实际数据的传递，检测任务使用`std::promise<void>`，反应任务相应的使用`std::future<void>`或`std::shared_future<void>`，实现如下：
+
+   ```c++
+   std::promise<void> p;                // 信道的约值
+   // 检测部分
+   p.set_value();                       // 通知反应任务
+   // 反应部分
+   p.get_future().wait();               // 等待通知
+   ```
+
+   因为使用共享内存，必然导致heap上的分配和回收的成本。最重要的是`std::promise`型别对象**只能设置一次**。
+
+对于多个的暂停和再继续的功能，就通过`p.get_future().share();`来即可
+
+## 条款40：对并发使用std::atomic，对特种内存使用volatile
+
+atomic就是所有相关操作（递增/减，RMW）都是原子的，volatile只是告诉编译器不优化，不是原子的（这个条款太熟悉了...）
+
+C++ `std::atomic`还有一个限制：源码中，不允许任何代码提前至后续会出现的`std::atomic`型别变量的写入操作位置（或使其他内核视作操作会发生）。这意味着比如下例中：
+
+```c++
+std::atomic<bool> valAvailable(false);
+auto imptValue = computeImportamtValue();  // 表达式1
+valAvailable = true;                       // 表达式2
+```
+
+编译器会生成代码保持表达式1，2的顺序，同时也会保证硬件上的执行也一定满足
+
+volatile告诉编译器不优化，按照”常规“的来：
+
+```c++
+// 多次读
+auto y = x;
+y = x;
+
+// 多次写
+x = 10;
+x = 20;
+
+//编译器优化后：
+auto y = x;
+x = 20;
+```
+
+编译器会把连续的多次读，写优化掉，volatile就是阻止这一点的
+
+`std::atomic`的赋值操作被删除了，这是有道理的，比如下面情况：
+
+```c++
+std::atomic<int> x;
+
+auto y = x;
+```
+
+在这个语句中，y的type被auto推导为`std::atomic`，但硬件无法在单一操作内完成两次原子操作
+
+## 条款41：针对可复制的形参，在移动成本低且一定被复制的前提下，考虑将其按值传递
+
+P263提供了重载版本的addName函数，如下：
+
+```c++
+class Widget {
+    public:
+    	void addName(const std::string& newName) {
+            names.push_back(newName);
+        }
+    
+    	void addName(std::string&& newName) {
+            names.push_back(std::move(newName));
+        }
+}
+```
+
+该例中，不论是右值移动还是左值copy，最后落实到push_back都是要进行一次copy的，所以代码有优化空间，书中讨论的方法如下：
+
+1. 重载：如上版本，都需要复制所以有优化空间
+
+2. 万能引用的模版：必须写到头文件，理论上有无数的实例生成，错误时错误信息难以理解（条款27）
+
+3. 直接传值
+
+   在C++98中，直接传值一定是复制构造；但C++14中，传右值的话默认进行移动构造，干净利落
+
+三种实现的对比：
+
+1. 重载： 无论传的左值还是右值，都会绑定到newName的引用上，copy指针常数消耗，然后左右值不同，这里消耗就是：左值一次copy，右值一次移动
+2. 万能引用：和重载一样绑定引用，常数消耗可忽略，使用`std::forward`转发和重载消耗一样：左值一次copy，右值一次移动
+3. 传value：不论左右值，在形参绑定时都会进行一次copy构造，之后的`std::move`就稳定消耗一次移动：综上不论是左值还是右值，都会多一次move的消耗
+
+但传value是由限制的，这里也说了只是”要考虑“，对于**可复制的形参**（书中对于`std::unique_ptr`的例子，会稳定把成本翻番），以及**形参move成本低廉**时，还有**形参一定会被复制时**，才考虑传value
+
+P270给出了一个改密码的例子，当形参**不一定**需要复制时（比如该例，旧密码比新密码长，不需要重新分配内存），重载版本会比传value版本少去内存分配和释放的消耗，低几个数量级
+
+而且即使分析了，可以接受，往往也要避免传值，因为如果个个都传值，消耗积少成多也很恐怖；包括传derived class的对象给base class对象形参会slice的问题。
+
+所以尽量不要用传value。除非：
+
+1. 对象copyable，且move成本低廉
+2. 传入的函数一定会对其复制操作
+3. slice问题也不用担心时
+4. 可以作为**易于实现**方法的一个”考虑“
+
+## 条款42：考虑置入而非插入
+
+简单的来说，就是push_back和emplace_back的区别，比如下面这个语句：
+
+```c++
+std::vector<std::string> vs;
+vs.push_back("xyz");
+```
+
+使用插入（push_back）会发生以下过程：
+
+1. C-style字符串的隐式转换：`const char[4]`type的“xyz“首先转换成`std::string`
+2. 以上生成的`std::string`为临时量，通过**移动构造函数**（第一次构造），右值引用的形参接收；然后在`std::vector<std::string>`内创建一个新的对象，是临时量的副本（第二次构造）
+3. 当push_back返回的瞬间，这个临时量被析构
+
+但如果使用置入（emplace_back），它使用了完美转发，只要不涉及条款30提到的限制，就可以省去第二次复制构造以及最后的析构
+
+当然还是有情况插入比置入更快的情况，但是需要结合很多的因素，这里还是一般的性能调优建议：对两者进行基准测试
+
+但如果以下条件都满足，那么几乎一定置入emplace会**更高效**：
+
+1. 欲添加的值是**以构造而非赋值**的方式加入容器。比如下面这个例子：
+
+   ```c++
+   vs.emplace(vs.begin(), "xyz");
+   ```
+
+   这个例子还是需要创建一个作为被移动对象的源，那么这就是稀释了emplace不创建不析构的优势
+
+2. 传递实参型别和容器持有的型别**不同**。型别不同时，接口并不要求创建和析构一个临时量，这时emplace和push的区别就很小了
+
+3. 容器不太可能因为**重复**就拒绝添加的新值时。也就是容器允许重复，或添加的绝大部分都满足唯一性时。**非重复容器**需要创建新节点和现有节点比较，当存在重复时就将新节点析构，这样emplace的优势也被稀释掉了
+
+但有一种情况，那就是自定义deleter的`std::shared_ptr`时，push创造的临时对象带来的收益远超成本：
+
+```c++
+// push插入版本
+ptrs.push_back(std::shared_ptr<Widget>(new Widget, Deleter));
+// emplace置入版本
+ptrs.emplace_back(new Widget, Deleter);
+```
+
+push_back会：
+
+1. 创建一个临时的`std::shared_ptr`，假设叫temp
+2. 如果在创建完毕试图加入ptrs时，发现内存不足抛出异常
+3. temp是一个`std::shared_ptr`，会调用自定义的deleter来完成内存管理
+
+emplace_back则：
+
+1. new Widget创建的裸指针被完美转发，此时分配失败，内存不足抛出异常
+2. 而唯一指向创建对象的裸指针已经丢失，造成内存泄漏
+
+在置入函数中，完美转发会推迟资源管理对象如`std::shared_ptr`的创建，容易因为异常导致内存泄漏
+
+当然，最好的代码规范还是把带new的操作单独列出一行，以防内存泄漏（条款21）
+
+最后的最后，置入函数使用**直接初始化**，而插入函数使用的是**copy初始化**，在P280中给出了一个regex的例子，因为直接初始化可以对explicit构造函数初始化，但copy初始化不行，所以emplace的代码通过了编译，但push版本的就不行
+
+
+
