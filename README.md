@@ -9,7 +9,7 @@
 
 《Modern C++》
 
-《以及鸟哥的Linux私房菜》
+以及《鸟哥的Linux私房菜》
 
 ```cout << "Here we go!" <<endl```
 
