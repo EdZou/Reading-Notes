@@ -667,3 +667,117 @@
 3. 系统或网络服务常驻于内存中，在后台启动并一直持续运行， 常被称为**daemon（服务）**
 4. `cp file1 file2 &`&就可以把命令挂在后台执行（面试的时候才知道的，当时还以为是nohup命令的一部分）
 5. 执行任务管理的操作中，每个任务都是当前bash的子进程，彼此间有关联，我们无法用任务管理的方式由tty1环境去管理tty2的bash
+6. 默认状态下使用`ctrl+z`会使job暂停，可以使用`jobs -l`命令看到，带有+号的是默认使用任务，带-号的是第二个被放到后台的任务，第三个以后的任务就不再带有+，-号了
+7. `fg`（foreground命令）可以把后台任务拿到前台处理，`fg %jobnumber`，也可以`fg +/-`来指定第一个和第二个进后台的程序拿到前台
+8. `bg %jobnumber`可以后台跑后台程序，可以观察到被跑的任务后加上了一个&表示在后台运行
+9. `kill`起到给信号管理后台任务的作用（`kill -l`看信号，32稳定32不稳定），特别留意-9是强制结束任务，-15（默认值）是按正常步骤结束一个任务。用法`kill -signal %jobnumber`
+10. 但目前用&挂起的后台本质是bash的后台而非系统的后台，这意味着如果远程连linux服务器然后脱机任务还是会被中断，所以需要`nohup [命令与参数]`注意nohup不支持bash内部命令，需要用外部命令来，脱机不会被打断，输出会被重定向到`nohup.out`中
+11. 查看进程：
+    1. 静态的`ps`：
+       1. 把某个时间点的进程运行情况截取
+       2. `ps -l`看自己bash进程，`ps aux`看系统运行进程
+       3. `ps -l`显示的信息解析见P525
+       4. `ps aux`显示的信息解析见P526
+       5. 僵尸进程除了进程标识为Z以外，进程CMD后会出现`<defunct>`，因为父进程无法完整的结束子进程
+    2. 动态的`top`：
+       1. top可以持续监测进程运行的状态
+       2. `top [-d 数字] | top [bnp]`，-d后接多少秒更新一次，-b通常与重定向有关，-n通常和-b一起，表示把多少次的top结果重定向，-p指定PID来进行检测
+       3. P527有详细操作，进入top界面由很多操作，比如面试重点M按内存使用率排序，r修改nice值等
+    3. `pstree`
+       1. `pstree [-A|U] [up]`
+       2. -A让进程树的链接使用ascii码，-U则是unicode字符（某些终端可能会乱码）
+       3. -p同时显示各个PID，-u同时显示各个进程所属账号名称
+12. 因为kill命令需要知道PID，往往和ps，pstree等命令一起使用。如果只想对命令产生的进程发信号，可以用`killall [-iIe] [command name]`指令（见P531），注意发送的信号会对系统中所有执行这个command的进程起作用
+13. PRI(priority)由内核动态调整，用户无法直接调整，但用户可以通过调整nice值**影响**PRI：
+    1. nice范围-20~19
+    2. 当nice为负值时，进程会降低PRI，使其较优先被处理
+    3. root可以随意调整自己或他人进程的nice值
+    4. 一般用户只能调整自己的nice值，且只能在0-19范围之内（避免一般用户抢占系统资源）
+    5. 一般用户仅能**将nice值越调越高**
+    6. 一开始就给进程一个特定nice值，使用`nice [-n 数字] command`
+    7. 后续调整用`renice [number] PID`
+14. `free`查看内存使用情况
+15. `uname`看系统和内核相关信息（具体见P534，一般用`uname -a`看所有信息）
+16. `uptime`看系统启动时间和任务负载
+17. `netstat [-atunlp]`追踪网络或socket文件，这个比较重要，还是在这里记一下：
+    1. `-a`列出所有链接，监听，socket
+    2. `-t`是TCP网络封包信息，`-u`是UDP网络封包信息
+    3. `-n`是不以进程的服务名称，以端口号来显示
+    4. `-l`列出目前正在listen的服务
+    5. `-p`列出网络进程的PID
+    6. internet的情况我也比较熟悉这里就不赘述
+    7. 除了internet，linux的进程可以通过socket文件通信，输出的字段有
+       1. Proto：一般是unix
+       2. RefCnt：连接到此socket的进程数量
+       3. Flags：连接的标识
+       4. Type：socket存取的类型，主要有确认连接的STREAM和不需要确认的DGRAM两种
+       5. State：若为CONNECTED则表示多个进程之间已经建立连接
+       6. Path：链接该socket相关进程的路径或相关输出的路径
+18. `dmesg`分析内核产生的信息
+19. `vmstat [-a] [延迟[总计检测次数]]`检测系统资源变化（CPU/内存/磁盘IO状态等，具体使用见P536），字段如下：
+    1. procs字段
+       1. r：等待中进程数量；b：不可唤醒的进程数量
+       2. 这两越多代表进程越繁忙
+    2. memory字段
+       1. swpd：虚拟内存被使用的数量
+       2. free：未被使用的内存容量
+       3. buff：缓冲存储器的数容量
+       4. cache：用于高速缓存的容量
+    3. swap字段：
+       1. si表示由磁盘中将进程取出的容量
+       2. so表示由于内存不足而写入swap的容量
+    4. 磁盘读写I/O字段：
+       1. bi表示由磁盘读入的区块数量
+       2. bo表示写入磁盘的区块数量
+       3. 这俩越高表示系统I/O越忙碌
+    5. 系统system字段：
+       1. in：每秒被中断的进程次数
+       2. cs：每秒执行的事件切换次数
+       3. 数值越大，表示系统与外界设备沟通越频繁
+    6. CPU字段
+       1. us：非内核层的CPU使用状态
+       2. sy：内核层的CPU使用状态
+       3. id：闲置的状态
+       4. wa：等待I/O所耗费的CPU状态
+       5. st：被虚拟机所使用的CPU状态
+20. SUID/SGID的权限
+    1. SUID
+       1. 其实与进程相关性非常大
+       2. SUID只能对二进制bin文件起效
+       3. 执行者对程序必须有x权限
+       4. 本权限仅在该程序的执行过程中有效（runtime）
+       5. 执行期间，执行者具有该程序owner的权限
+       6. 比如passwd以后就有了root权限，这是因为在触发passwd后，会获得一个**新的进程和PID**
+       7. 可以通过`find / -perm /6000`来找整个系统中的SUID/SGID文件
+21. `/proc/*`的意义
+    1. 各个进程的PID都是以目录形式存在于`/proc`中
+    2. 每个进程的目录里都有对应的files，这些文件的含义见P539
+22. `fuser [-umv] [-k [i] [-signal]] file/dir`可以看到正在使用文件或dir的进程
+23. `lsof`则可以列出进程正在使用的文件名称
+24. SELINUX：
+    1. 就是security enhanced Linux，因为企业发现系统出问题往往是内部员工的资源误用
+    2. 传统的文件权限与账号为自主访问控制（DAC），之前的那些根据进程拥有者和rwx权限的那些就是DAC
+    3. SE引入了强制访问控制（Mandatory Access Control，MAC），可以针对特性的进程和文件资源管理权限，打个比方就是你是root也不能为所欲为
+    4. 主体subject：进程；目标object：一般是文件系统；策略policy：规定资源读写的rule
+    5. 三种策略：
+       1. targeted：针对网络服务的较多，针对本机限制少，默认策略
+       2. minimum：由target自定义而来，仅对选择的进程进行保护
+       3. mls：完整的SELinux限制，比较严格
+    6. `ls -Z`可以看到三字段`Identity:role:type`
+       1. Identity：一般有unconfined_u（不受限user）；system_u（系统用户）
+       2. Role：object_r（代表文件或目录，最常见）；system_r（代表进程或一般用户）
+       3. Type（最重要）：在文件资源Object上被称为Type；在主题进程Subject上被称为Domain。Domain需要和Type搭配来读取文件资源
+       4. （ubuntu16里只能看到一个字段...）
+    7. 三种模式：
+       1. Enforcing：强制模式，表示已经正确开始限制domain/type
+       2. Permissive：宽容模式，仅有警告信息不影响实际读写，可用作SE的debug
+       3. Disabled：关闭模式
+    8. `setenforce`指令可以在Permissive和Enforcing之间转换，`getenforce`指令可以查看
+    9. ubuntu16的selinux启动和书上的大相径庭，详见这个链接[enable SELinux](https://linuxconfig.org/how-to-disable-enable-selinux-on-ubuntu-20-04-focal-fossa-linux)
+    10. 对SELinux里的规则查看和修改分别用`getsebool`和`setsebool`
+    11. **因为我尝试着往ubuntu上安装selinux并且重启后，机子直接裂开了**，我这里参考了[stackoverflow sol1](https://askubuntu.com/questions/1180868/after-installed-selinux-system-is-stuck-and-not-booting)和[stackoverflow sol2](https://askubuntu.com/questions/141606/how-to-fix-the-system-is-running-in-low-graphics-mode-error)才终于解决了。看大佬们说**ubuntu和selinux天生八字不合**，这之后SELinux部分我就不跟着搞了
+
+## 第17章 认识系统服务（daemon）
+
+1. systemd的好处
+
