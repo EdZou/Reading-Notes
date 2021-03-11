@@ -775,9 +775,209 @@
     8. `setenforce`指令可以在Permissive和Enforcing之间转换，`getenforce`指令可以查看
     9. ubuntu16的selinux启动和书上的大相径庭，详见这个链接[enable SELinux](https://linuxconfig.org/how-to-disable-enable-selinux-on-ubuntu-20-04-focal-fossa-linux)
     10. 对SELinux里的规则查看和修改分别用`getsebool`和`setsebool`
-    11. **因为我尝试着往ubuntu上安装selinux并且重启后，机子直接裂开了**，我这里参考了[stackoverflow sol1](https://askubuntu.com/questions/1180868/after-installed-selinux-system-is-stuck-and-not-booting)和[stackoverflow sol2](https://askubuntu.com/questions/141606/how-to-fix-the-system-is-running-in-low-graphics-mode-error)才终于解决了。看大佬们说**ubuntu和selinux天生八字不合**，这之后SELinux部分我就不跟着搞了
+    11. **因为这里我尝试着往ubuntu上安装selinux并且重启后，机子直接裂开了**，我这里参考了[stackoverflow sol1](https://askubuntu.com/questions/1180868/after-installed-selinux-system-is-stuck-and-not-booting)和[stackoverflow sol2](https://askubuntu.com/questions/141606/how-to-fix-the-system-is-running-in-low-graphics-mode-error)才终于解决了。看大佬们说**ubuntu和selinux天生八字不合**，这之后SELinux部分我就没跟着搞了
 
 ## 第17章 认识系统服务（daemon）
 
-1. systemd的好处
+1. systemd的好处（见P566）
+2. systemd将过去所谓的daemon执行脚本统统称为一个服务单位（unit），根据功能划分为不同的类型，包括：系统服务，数据监听与交换的socket文件服务，存储系统状态的快照类型，提供不同运行级别的操作环境（target）等，都放在以下目录中：
+   1. `/usr/lib/systemd/system`：每个服务最主要的启动脚本设置，有点类似以前的`/etc/init.d`
+   2. `run/systemd/system`：执行过程中产生的脚本，优先级**高于**前一种
+   3. `/etc/systemd/system`：管理员根据主机需求建立的执行脚本，优先级又更高一些
+3. 可以根据扩展名判断unit的类型：
+   1. .service：一般服务类型，一般是系统服务和网络服务
+   2. .socket：内部程序数据交换的socket服务（IPC）
+   3. .target：执行环境类型，一群unit的集合
+   4. .mount/.automount：文件挂载相关的服务
+   5. .path：检测特定文件或目录类型（某些服务需要特定目录来提供队列服务，如打印服务）
+   6. .timer：循环执行的服务，类似anacrontab，但由systemd提供，更有弹性
+4. 除了kill命令外，`systemctl [command] [unit]`也是管理unit的良好手段（P568罗列了command）。比如我们可以使用`systemctl stop atd.service`来关闭，一个正常的服务不该用kill指令关闭，因为关闭后systemctl**无法继续监控该服务了**
+5. Active状态：
+   1. running：正有一个或多个服务正在系统中运行
+   2. exited：仅执行一次就结束的服务
+   3. waiting：正在运行中，不过还需要等待其他事件发生才能继续运行（打印服务）
+6. daemon默认状态：
+   1. enabled：这个daemon将在开机时被运行
+   2. disabled：这个daemon开机时不会被运行
+   3. static：这个daemon不可以自己启动（不能enable），但可能被其他enabled的服务唤醒（依赖属性的服务）
+   4. mask：这个daemon无论如何都无法启动，因为已经被强制注销（非删除）。可被`systemctl unmask`方法改回默认
+7. 查看系统上所有的服务：
+   1. 命令`system [command] [--type=TYPE] [--all]`
+   2. command：
+      1. `list-units`依据unit显示目前启动的unit（加上--all可以把没启动的也列出来）
+      2. `list-unit-files`依据`usr/lib/systemd/system/`内的文件
+   3. 可以根据type来调整，比如我只想看daemon，那么可以`type=service`
+8. target unit：
+   1. 可以通过`systemctl list-units --type=target`来查看
+   2. 正常模式使用`mutil-user.target`和`graphical.target`
+   3. 恢复模式用`rescue.target`（systemd启动时增加一个额外的临时系统，可以取得root来维护原系统）和`emergency.target`（更紧急）
+   4. 修改可提供登陆的tty数量，可修改`getty.target`
+   5. command参数：
+      1. get-default：获得目前的target
+      2. set-default：更改后面接的target为默认
+      3. isolate：切换到后面接的模式（service部分用的start，stop，restart等参数）
+9. 通过systemctl看服务之间的依赖性：
+   1. `systemctl list-dependencies [unit] [--reverse]`，reverse指反向追踪谁依赖这个unit
+10. P578举了一个vsftpd的配置文件目录意义的例子，P579则提供了unit部分参数意义表，P580提供了Service的参数意义表，如果需要配置service可以参考
+11. getty的@是1-6（范式）的一种缩写，如果需要修改tty的个数，可以参见P583对`/etc/systemd/logind.conf`进行修改
+
+## 第18章 认识和分析日志文件
+
+1. 针对日志文件需要的服务和程序：
+
+   1. `systemd-journald.service`：最主要的信息记录者，由systemd提供
+   2. `rsyslog.service`：主要收集登陆系统和网络等服务的信息
+   3. `logrotate`：主要进行日志文件的轮循功能（旧日志满了开个新的空的日志，等一段时间后没被用到，旧日志文件就会被删）
+
+2. 日志内容的一般模式：
+
+   1. 事件发生的日期与时间
+   2. 发生此事件的主机名
+   3. 启动此事件的服务名称（systemd，crond等）或命令与函数名称（如su，login等）
+   4. 该信息的实际内容
+
+3. `/etc/rsyslog.conf`就是rsyslog的配置文件，规定了
+
+   1. 什么服务（见P599表，或使用`man 3 syslog`查询）
+
+   2. 的什么等级的信息（见P600表，从0-6严重性依次降低，debug（7）和none是两个特殊等级，用作debug和隐藏部分错误信息的调试）
+
+      等级信息前还有连接符号：
+
+      1. `.`代表比后面严重的信息（>=），就会被记录
+      2. `.=`代表所需要的仅仅是后面接的等级，其他的不要
+      3. `.!`代表除了后面接的等级，其他都要
+
+   3. 需要被记录在哪里（设备或文件），在目标文件前加上减号`-`意味着由于信息产生较多，希望能先存储在速度较快的buffer中，数据量够大了一次性写入磁盘
+
+4. 对于logrotate而言，`/etc/logrotate.conf`才是主要的参数文件，`/etc/logrotate.d/`下的文件会被主动读入.conf中使用（这点和ubuntu上的rsyslog的布置是一样的）
+
+5. 可以通过`cat /etc/logrotate.conf`看轮循的配置文件，参数意义如下：
+
+   1. 第一个参数是周期，`weekly`或`monthly`都有
+   2. 第二个参数是创建一个新的日志文件create语句
+   3. 第三个`rotate number`表示最大由number个日志文件
+   4. 还有一个compress参数如果文件太大可以用
+
+6. 通过`cat /etc/logrotate.d/syslog`来观察如何设置它的轮循(书上的，ubuntu16的文件内容大相径庭，压根没的syslog)
+
+   1. 根据这个网站[ubuntu logrotate](https://www.digitalocean.com/community/tutorials/how-to-manage-logfiles-with-logrotate-on-ubuntu-16-04)，其实书上的说法也相近，只是.conf中的那些参数也可以一并写进logrotate.d的文件的{}中
+
+   2. 正确写法为
+
+      1. 文件名：被处理的日志文件的绝对路径，可用空格分开多个文件
+      2. 文件后接轮循的参数，要用{}括起来
+      3. 执行脚本需要和`sharedscripts`以及`endscripts`结合使用，可用的环境为
+         1. prerotate：在启动logrotate前进行的命令（如修改文件属性）
+         2. postrotate：在做完logrotate之后的命令（如重新启动`kill -HUP`某服务）
+
+   3. ubuntu的示例如下：
+
+      ```
+      /var/log/example-app/*.log {
+          daily
+          missingok
+          size                            // 规定大于某个大小开始轮循
+          rotate 14
+          compress
+          notifempty
+          create 0640 www-data www-data
+          sharedscripts                   // 执行脚本的开始
+          postrotate
+              systemctl reload example-app
+          endscript
+      }
+      ```
+
+7. `journalctl`查看登录信息的详解见P611，这里不多赘述
+
+## 第19章 启动流程、模块管理与Loader
+
+1. 流程大致如下：
+
+   1. 加载BIOS的硬件信息和进行自检，根据设置取得第一个可以启动的设备
+   2. 读取并执行第一个可启动设备中的MBR引导程序（第一章提到过，也就是grub2等程序）
+   3. 根据启动引导程序的设置加载kernel，kernel会开始检测硬件和加载驱动程序
+   4. 硬件驱动成功后，kernel会主动调用systemd程序，并以default.target流程启动
+      1. systemd执行sysinit.target初始化系统以及basic.target准备操作系统
+      2. systemd启动multi-user.target下的本机与服务器服务
+      3. systemd执行multi-user.target下的/etc/rc.d/rc.local文件
+      4. systemd执行multi-user.target下的getty.target及登陆服务
+      5. systemd执行graphical需要的服务（昨天ubuntu装SELinux就是倒在了这一步，后面靠着tty1起死回生）
+
+2. 启动引导程序就是boot loader，BIOS通过INT 13终端功能读取，最主要的功能是识别操作系统的文件格式（和第一章重复的部分就不多说了），最终目的是**加载内核文件**
+
+3. 当内核文件经由boot loader完成读取后，Linux会把内核**解压到**内存中，然后开始测试与驱动各个设备（BIOS后又一次自检），这次之后内核就完全接管了BIOS的工作了
+
+4. Linux内核通过动态加载内核module，这些放在`/lib/module`内（/lib和/从来不能放在俩分区），因此在启动过程中**内核必须要挂载根目录**，这样才能读取内核module提供的加载驱动程序的功能。
+
+   但USB,SATA,SCSI等设备的驱动往往也是module，如果不先读取这些驱动的module，内核连这些设备是啥都不知道，遑论挂载根目录了
+
+   所以有了虚拟文件系统（Initial RAM Disk/Filesystem，在ubuntu16里是`initrd.img-4.15.0-136-generic`），特点是能够通过boot loader加载到内存中，然后这个文件**会被解压并模拟成一个根目录**，此模拟在内存中的文件系统能够提供一个可执行程序，可通过该程序来加载**启动过程中最需要的module**，比如USB, SATA, SCSI等
+
+   加载完成后会帮助内核重新调用systemd，最终释放虚拟文件系统
+
+5. 第一个程序systemd分析
+
+   1. 首先连接到`usr/lib/systemd/system`里读取`multi-user.target`或`graphical.target`中的任意一个，如果读到graphical，那么根据unit.wants，系统会发现必须先启动multi-user，multi-user又依赖于`basic.target`，basic又在`sysinit.target`之后，所以最后还是一个顺序，可以通过`systemctl list-dependencies graphical.target`看这个顺序（Ubuntu16和书上的CentOS差的挺大的...）：
+
+      ```c++
+      ● ├─accounts-daemon.service
+      ● ├─apport.service
+      ● ├─grub-common.service
+      ● ├─irqbalance.service
+      ● ├─lightdm.service
+      ● ├─ondemand.service
+      ● ├─speech-dispatcher.service
+      ● ├─systemd-update-utmp-runlevel.service
+      ● ├─ureadahead.service
+      ● ├─vmware-tools-thinprint.service
+      ● ├─vmware-tools.service
+      ● └─multi-user.target
+      ●   ├─anacron.service
+      ●   ├─apport.service
+      ●   ├─atd.service
+      ●   ├─avahi-daemon.service
+      ●   ├─cron.service
+      ●   ├─cups-browsed.service
+      ●   ├─cups.path
+      ●   ├─dbus.service
+      ●   ├─dns-clean.service
+      ●   ├─grub-common.service
+      ```
+
+   2. 所以把unit enable的本质就是把unit放到`multi-user.target.wants`的目录中做链接
+
+   3. 系统完成启动后，还想让其完成**额外的程序执行**，可以写入`/etc/rc.local`中
+
+6. 两个地方处理模块加载：
+
+   1. `/etc/modules-load.d/*.conf`：单纯要内核加载模块的位置（无参数）
+   2. `/etc/modprobe.d/*.conf`：可以加上模块**参数***的位置
+
+7. 内核模块放置于`/lib/modules/4.15.0-136-generic/kernel/`中，具体文件的含义见P631，可以用`depmod`建立一个文件，内含模块的依赖性。
+
+8. `lsmod`可以看目前内核加载了多少module，显示名称，大小，和used by。看module的具体信息用`modinfo [-adln]`（author，description，license，路径）
+
+9. 模块的加载与删除：
+
+   1. `modprobe`命令（推荐）：自动查找module.dep的记录，能够解决模块依赖的问题
+   2. `insmod`加载/`rmmod`卸载：需要自己找到完整的文件名，并且一旦产生依赖性问题，无法加载或删除模块
+
+10. 因为MBR只有446B太小了，往往MBR仅安装boot loader的最小主程序，第二步再利用boot loader去加载所有的配置文件和环境参数文件（系统定义与主要配置文件grub.cfg）
+
+11. grub2对硬盘代号的设置：
+
+    1. (hd0,1)：一般的默认语法，由grub2自行判断
+    2. (hd0,msdos1)：传统的MBR式分区
+    3. (hd0,gpt1)：GPT模式
+    4. 硬盘代号用()括起来，硬盘就是hd+number，以查找顺序作为number，第一个被找到的是0，第二个是1。但每块硬盘的第一个分区代号为1（参见P636表的例子，很好理解）
+
+12. 因为grub2不支持直接对grub.cfg进行编辑，可以通过编辑`/etc/default/grub`这个环境配置文件，之后再使用`grub2-mkconfig`来重建grub.cfg，参数意义见P638。可以用`menuentry`来划定一个系统的参数，然后在`GRUB_DEFAULT`中设定使用哪套menuentry的参数
+
+13. P641展示了通过chainloader交出loader控制权的方法（可以作为先安装linux后安装win的一个解决方法）
+
+14. 可以通过在`/etc/grub.d/*`下创建一个`01_users`的文件来加入不同用户需要输入密码获得不同操作系统的判断（详见P648），然后再在40_custom中创建menuentry时加上`--user`的选项
+
+15. 
 
