@@ -979,5 +979,200 @@
 
 14. 可以通过在`/etc/grub.d/*`下创建一个`01_users`的文件来加入不同用户需要输入密码获得不同操作系统的判断（详见P648），然后再在40_custom中创建menuentry时加上`--user`的选项
 
-15. 
+15. 忘记root密码可参见P651的解决方案。总的来说就是先进入`rd.break`模式，然后用`chroot`将系统根目录暂时挂载到/sysroot上，修改完root密码后再启动就行
+
+## 第20章 基础系统设施与备份策略
+
+这一章的重点我个人认为没那么多，就不做过多的笔记了
+
+1. 硬件资源的收集与分析
+   1. `lspci`看整个PC的PCI接口设备
+   2. `lsusb`看USB接口和设备
+   3. `iostat`和vmstat类似，实时列出整个CPU和接口设备的IO状态
+2. `smartd`检查磁盘的好坏（P667）
+3. 完整备份之累计备份（Incremental backup）：系统再进行第一次完整备份后，每经一段时间的运行，仅备份有差异的文件而已，第三次备份时仅备份与第二次备份有差异的部分（常用dd，cpio，xfsdump/xfsrestore等）
+4. 差异备份（differential backup）：每次备份都是备份和原始数据的差异部分
+5. P675，676，677提供了一些备份脚本的案例
+
+## 第21章 软件安装：源代码与Tarball
+
+1. Linux上真正可识别的程序是二进制程序，比如`file /bin/bash`和`file /etc/init.d/network`看到的东西完全不一样
+
+2. gcc编译时额外加上函数库的链接方式：`gcc sin.c -lm -L\Lib -L\Lib64`，其中：
+
+   1. `-l`是加入某个library的意思
+   2. `-m`则是libm.so这个函数库
+   3. `-L`接的路径表示我要的函数库libm.so请到`/lib`或`/lib64`中查找。
+   4. 设置读include文件的路径：`gcc sin.c -lm -I/usr/include`，`-I/path`就是设置去查找include文件的相关目录
+   5. `-o`后接目标二进制文件名
+   6. 最后接`-Wall`会把所有警告信息显示
+   7. `gcc -O hello.c -c`会产生hello.o文件
+
+3. makefile的基本语法：
+
+   1. `#`是注释
+
+   2. 格式:
+
+      ```makefile
+      目标（target）：目标文件1 目标文件2
+      <tab>	gcc -o 执行文件名 目标文件1 目标文件2
+      ```
+
+      `<tab>`必须是命令行（如gcc命令）的第一个字符
+
+      target和目标文件需要以`:`隔开
+
+   3. 变量的定义：
+
+      1. 例子：
+
+         ```makefile
+         SCRIPT_DIR := $(CUR_DIR)/script
+         C_FLAGS := -std=c++17 -g -Wall -Werror -fPIC -O0
+         ```
+
+         变量与变量间以=隔开，可以`:=`表示创建，`+=`表示string的连接
+
+         左边不能有`<tab>`
+
+         =两边的内容部分不能出现`:`
+
+         习惯上，变量名以大写为主
+
+         运用变量时，以`${var}或$(var)`使用
+
+         shell中的变量可以被套用，比如C_FLAGS
+
+         在命令行也可以设置变量
+
+   4. 因为变量可能会重名，变量的使用规则如下：
+
+      1. make命令后加上的环境变量最优先
+      2. makefile中指定的环境变量第二
+      3. shell中原本就有的环境变量第三
+
+   5. `$@`表示当前目标，比如：
+
+      ```makefile
+      main: ${OBJ}
+      	gcc -0 $@ ${OBJ} ${LIBS} # 这里$@就是main
+      ```
+
+      `$<`则表示第一个依赖文件
+
+   6. 用shell中的方法，如下使用（见[stackoverflow discussion](https://stackoverflow.com/questions/10121182/multi-line-bash-commands-in-makefile)）：
+
+      ```makefile
+      foo:
+      	gcc `find`   # 一种写法使用shell中的find方法
+      foo2:
+      	gcc $$(find) # 另一种等同写法
+      ```
+
+   7. 项目中的makefile用到的是：https://www.gnu.org/software/make/manual/html_node/Splitting-Recipe-Lines.html，`@command`一般用在`@echo`来不在terminal显示命令执行的输出
+
+   8. https://seisman.github.io/how-to-write-makefile/introduction.html这个文档关于makefile比较全面，我也看了
+
+4. 参考apache，软件的内容大致是在`etc, lib, bin, man`中，分别代表**配置文件，函数库，执行文件，联机帮助文件**
+
+5. 静态动态函数库：
+
+   1. 静态：
+      1. 扩展名：`libxxx.a`
+      2. 编译操作：编译时直接整合到执行程序中，所以静态函数库**编译成的文件相对大一些**
+      3. 编译成功的文件可以独立运行，不需要向外部读取内容函数库（动态需要）
+      4. 静态函数库update后，所有使用它的程序都需要重新编译
+   2. 动态：
+      1. 扩展名：`libxxx.so`
+      2. 编译操作：程序里只有一个指针位置，当执行文件用到函数库功能时才会去读取，文件小
+      3. **不能**独立运行，函数库文件必须存在，目录也不能改变（不然指针读不到）
+      4. 动态函数库update后不需要重新编译
+
+6. 把动态库加入cache中加快读取速度：
+
+   1. 在`/etc/ld.so.conf`中写入**想放入cache的动态库所在的目录**
+   2. 利用`ldconfig`命令将动态库读进cache（就是ldconfig就可以，没有参数，没有输出结果）
+   3. 同时数据记录一份到`/etc/ld.so.cache`中，可以通过`ldconfig -p`读取
+
+7. 程序的动态函数库解析：`ldd [-vdr] [filename]`：
+
+   1. `-v`列出所有内容信息
+   2. `-d`重新将数据由遗失的链接点显示出来
+   3. `-r`将ELF有关的错误内容显示出来
+
+## 第22章 软件安装RPM、SRPM与YUM
+
+这章RPM的部分我就过一遍，主要是自己一直都是用ubuntu的dpkg...这些东西很难跟着做
+
+1. `rp-pppoe-3.11-5.el7.x86_64.rpm`文件的意义：
+
+   ```
+   rp-pppoe    软件名称
+   -3.11-      软件的版本信息
+   5           发布的次数
+   .e17.x86_64 适合的硬件平台
+   .rpm        扩展名
+   ```
+
+2. 平台的名称与特点：
+
+   1. `i386`：几乎适用于所有x86平台，不管是不是32/64位
+   2. `i586`：就是针对586级别的计算机进行优化编译（pentium一代）
+   3. `i686`：针对pentium II以后的Intel系列CPU
+   4. `x86_64`：仅对64位CPU进行优化编译设置
+   5. `noarch`：就是没有任何硬件等级上的限制
+
+## 第23章 X Window设置介绍
+
+1. X Window System是通过网络取得图形用户界面的一个架构（P741图，类似于远程桌面），其目的在于管理**客户端的硬件服务**，**每台客户端都需要安装X Server**，而**服务器则提供X Client**以提供客户端需要的绘图数据
+
+2. X Server也会收集诸如鼠标键盘的硬件操作并告知服务器上的X Client，而X Client的主要任务是将来自X Server的数据处理成为绘图数据，在返回给X Server
+
+3. 可以使用`xstart [X Client param] -- [X Server param]`来启动，参数的读取顺序是：
+
+   1. 首先如果xstart语句里提供了参数，那么就使用
+   2. 没有就查找`~/.xserverrc`（X Server）或`~/.xinitrc`（X Client）
+   3. 还没有再查找`/etc/X11/xinit/xserverrc`（X Server）或`/etc/X11/xinit/xinitrc`（X Client）
+
+4. 接下来这块我跟着书上做，一开始的差距还是挺大的：
+
+   1. 首先我尝试在tty2上跑`startx -- -depth 16`命令，tty2直接显示了一个不一样分辨率的tty7桌面，但鼠标形状和书上一致，可以发现发生了变化
+   2. 其次我在tty3中尝试使用`X :1 &`以及`xterm -display :1 &`以及`xclock`等操作后，确实在tty2上看见了变化
+
+5. xorg文件设置configuration见P749
+
+6. 字体管理书上的一种做法是，如果要自行获取字体来安装的话，可以：
+
+   1. 进入`cd /usr/share/fonts`文件夹
+   2. 比如移植一些win的字体，可以在fonts文件夹下`mkdir Windows`
+   3. 最后copy一下字体文件，`cp /root/font/*.ttf /usr/share/fonts/Windows/`
+   4. 之后使用`fc-cache -f -v`将上述文件加入字体支持列表
+
+   之后就能使用自定义字体了
+
+7. 显示器参数微调，如`xrandr -s 1280*800`
+
+## 第24章 Linux内核编译与管理
+
+1. 其实内核就是系统上的一个文件而已，这个文件包含了驱动主机各项硬件的检测模块与驱动模块
+2. 内核源码的子目录与解析见P764
+3. 编译内核的几个大步骤：
+   1. 确认主机配置和用途来选择功能
+   2. 保持内核源代码的干净，使用`make mrproper`清楚缓存和配置文件
+   3. 选择内核功能与make配合：
+      1. `make menuconfig`：命令行模式下显示纯文本界面
+      2. `make oldconfig`：已存在的`./.config`作为默认值，只选择新版本内核的新选项作为选择，简化内核功能的选择过程
+      3. `make xconfig`：通过以Qt位图形界面基础功能的图形化接口显示
+      4. `make config`：最原始的选择方法，所有都让user一条条选，选错只能全部重来
+   4. 选择完成后开始编译，有以下操作：
+      1. `make vmLinux`：编译未经压缩的内核
+      2. `make modules`：仅编译内核模块
+      3. `make bzImage`：编译经压缩过的内核（默认）
+      4. `make all`：上述所有操作
+   5. 编译完成后安装：`make modules_install`
+
+
+
+至此，读书部分终于告一段落了，向项目部分前进！！！
 
