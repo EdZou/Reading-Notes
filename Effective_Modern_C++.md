@@ -1453,10 +1453,7 @@ P209开始一直在讨论成员函数内的lambda表达式如何捕获一个类�
 
 1. 有捕获this然后指针的，但这样也可能会导致空悬，因为把对象emplace到一个filter中，尔后对象自身被删除就又又又空悬指针了
 
-2. 也可以在成员函数内直接用局部变量copy一个，然后让lambda捕获
-
-3. **广义lambda捕获（generalized lambda capture）**是更优秀的方案，如下：
-
+2. 也可以在成员函数内直接用局部变量copy一个，然后让lambda捕获，如下：
    ```c++
    void Widget::addFilter() const {
        filters.emplace_back(
@@ -1464,6 +1461,24 @@ P209开始一直在讨论成员函数内的lambda表达式如何捕获一个类�
                return value % divisor == 0;
            }
        )
+   }
+   ```
+
+3. **广义lambda捕获（generalized lambda capture）**是更优秀的方案，如P211：
+   ```c++
+   void addDivisorFilter {
+       static auto calc1 = computeSomeValue1();
+       static auto calc2 = computeSomeValue2();
+       
+       static auto divisor = computeDivisor(calc1, calc2);
+       
+       filters.emplace_back(
+           [=](int value) { // 广义捕获, 实际上并未捕获到static的divisor！
+               return value % divisor == 0; // 尽管没有捕获到divisor，但仍然可以用
+           }
+       )
+       
+       ++divisor;  // 由于不是值捕获，后续对divisor的更改会反映到lambda中
    }
    ```
 
